@@ -1,0 +1,32 @@
+opam-version: "2.0"
+name:         "spf"
+maintainer:   "Romain Calascibetta <romain.calascibetta@gmail.com>"
+authors:      "Romain Calascibetta <romain.calascibetta@gmail.com>"
+homepage:     "https://github.com/dinosaure/spf"
+bug-reports:  "https://github.com/dinosaure/spf/issues"
+dev-repo:     "git+https://github.com/dinosaure/spf.git"
+doc:          "https://dinosaure.github.io/spf/"
+license:      "MIT"
+synopsis:     "SPF implementation in OCaml"
+description: """ocaml-spf is an implementation of the SPF verifier
+in OCaml compatible with MirageOS."""
+
+build: [ "dune" "build" "-p" name "-j" jobs ]
+run-test: [ "dune" "runtest" "-p" name "-j" jobs ]
+
+depends: [
+  "ocaml"       {>= "4.07.0"}
+  "dune"        {>= "2.8.0"}
+  "rresult"
+  "logs"
+  "colombe"
+  "ipaddr"
+  "hmap"
+  "angstrom"
+  "domain-name"
+  "dns-client"
+]
+
+pin-depends: [
+  [ "colombe.dev" "git+https://github.com/mirage/colombe.git#a2c706f14e5b890d9b6e7b812163fd030bd4936d" ]
+]

@@ -1,0 +1,8 @@
+(executable
+ (name test_macro)
+ (libraries spf alcotest))
+
+(rule
+ (alias runtest)
+ (action
+  (run ./test_macro.exe --color=always)))
