@@ -25,6 +25,7 @@ depends: [
   "angstrom"
   "domain-name"
   "dns-client"
+  "alcotest" {with-test}
 ]
 
 pin-depends: [
