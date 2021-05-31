@@ -175,7 +175,7 @@ module Macro = struct
         Buffer.contents buf
 
   let expand_macro hmp t =
-    try R.ok (expand hmp t)
+    try Domain_name.of_string (expand hmp t)
     with Not_found ->
       Fmt.error_msg "Missing informations while expanding macro"
 
@@ -418,12 +418,12 @@ module Term = struct
 end
 
 type mechanism =
-  | A of string option * int option * int option
+  | A of [ `raw ] Domain_name.t option * int option * int option
   | All
-  | Exists of string
-  | Include of string
-  | Mx of string option * int option * int option
-  | Ptr of string option
+  | Exists of [ `raw ] Domain_name.t
+  | Include of [ `raw ] Domain_name.t
+  | Mx of [ `raw ] Domain_name.t option * int option * int option
+  | Ptr of [ `raw ] Domain_name.t option
   | V4 of Ipaddr.V4.Prefix.t
   | V6 of Ipaddr.V6.Prefix.t
 
@@ -435,13 +435,17 @@ let pp_dual_cidr ppf = function
 
 let pp_mechanism ppf = function
   | A (v, cidr_v4, cidr_v6) ->
-      Fmt.pf ppf "a:%a%a" Fmt.(option string) v pp_dual_cidr (cidr_v4, cidr_v6)
+      Fmt.pf ppf "a:%a%a"
+        Fmt.(option Domain_name.pp)
+        v pp_dual_cidr (cidr_v4, cidr_v6)
   | All -> Fmt.string ppf "all"
-  | Exists v -> Fmt.pf ppf "exists:%s" v
-  | Include v -> Fmt.pf ppf "include:%s" v
+  | Exists v -> Fmt.pf ppf "exists:%a" Domain_name.pp v
+  | Include v -> Fmt.pf ppf "include:%a" Domain_name.pp v
   | Mx (v, cidr_v4, cidr_v6) ->
-      Fmt.pf ppf "mx:%a%a" Fmt.(option string) v pp_dual_cidr (cidr_v4, cidr_v6)
-  | Ptr (Some v) -> Fmt.pf ppf "ptr:%s" v
+      Fmt.pf ppf "mx:%a%a"
+        Fmt.(option Domain_name.pp)
+        v pp_dual_cidr (cidr_v4, cidr_v6)
+  | Ptr (Some v) -> Fmt.pf ppf "ptr:%a" Domain_name.pp v
   | Ptr None -> ()
   | V4 ipv4 -> Fmt.pf ppf "ip4:%a" Ipaddr.V4.Prefix.pp ipv4
   | V6 ipv6 -> Fmt.pf ppf "ip6:%a" Ipaddr.V6.Prefix.pp ipv6
@@ -486,8 +490,7 @@ let ( <.> ) f g x = f (g x)
 
 let fold ctx acc = function
   | `Directive (quantifier, `A (macro, (cidr_v4, cidr_v6))) ->
-      let macro =
-        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
+      let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
       let mechanism =
         (quantifier_of_letter quantifier, A (macro, cidr_v4, cidr_v6)) in
@@ -515,16 +518,14 @@ let fold ctx acc = function
       | Error _ -> acc
       (* TODO *))
   | `Directive (quantifier, `Mx (macro, (cidr_v4, cidr_v6))) ->
-      let macro =
-        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
+      let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
       let mechanism =
         (quantifier_of_letter quantifier, Mx (macro, cidr_v4, cidr_v6)) in
       { acc with mechanisms = mechanism :: acc.mechanisms }
   | `Directive (quantifier, `Ptr macro) ->
       let quantifier = quantifier_of_letter quantifier in
-      let macro =
-        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
+      let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
       { acc with mechanisms = (quantifier, Ptr macro) :: acc.mechanisms }
   | `Directive (quantifier, `V4 ipv4) ->
@@ -536,44 +537,54 @@ let fold ctx acc = function
   | `Explanation macro ->
       let modifier =
         Lazy.from_fun @@ fun () ->
-        Explanation (R.failwith_error_msg (Macro.expand_macro ctx macro)) in
+        Explanation
+          (Domain_name.to_string
+          @@ R.failwith_error_msg (Macro.expand_macro ctx macro)) in
       { acc with modifiers = modifier :: acc.modifiers }
   | `Redirect macro ->
       let modifier =
         Lazy.from_fun @@ fun () ->
-        Redirect (R.failwith_error_msg (Macro.expand_macro ctx macro)) in
+        Redirect
+          (Domain_name.to_string
+          @@ R.failwith_error_msg (Macro.expand_macro ctx macro)) in
       { acc with modifiers = modifier :: acc.modifiers }
   | `Unknown _ -> acc
 
 let rec select_spf1 = function
-  | [] -> R.error_msgf "No SPF record found"
+  | [] -> Error `None
   | x :: r when String.length x >= 6 ->
       if String.sub x 0 6 = "v=spf1" then R.ok x else select_spf1 r
   | _ :: r -> select_spf1 r
 
-let get_records :
+type res =
+  [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ]
+
+let record :
     type dns t.
-    ctx ->
+    ctx:ctx ->
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
-    ( ([ `None | `Permerror | `Record of record ], [> `Msg of string ]) result,
-      t )
-    io =
- fun ctx { bind; return } dns (module DNS) ->
+    (([ res | `Record of record ], [> `Msg of string ]) result, t) io =
+ fun ~ctx { bind; return } dns (module DNS) ->
   let ( >>= ) = bind in
   match Map.find Map.K.domain ctx with
   | None -> return (R.error_msgf "Missing domain-name into the given context")
   | Some domain_name -> (
-      DNS.getaddrinfo dns `TXT domain_name >>= function
-      | Error (`Msg err) ->
-          Log.warn (fun m -> m "Got an error with <getaddrinfo>: %s." err) ;
-          return (Ok `None)
-      | Ok txts ->
-      match R.(select_spf1 txts >>= Term.parse_record) with
+      DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
+      | Error (`No_domain _ | `No_data _) -> return (Ok `None)
+      | Error (`Msg _) -> return (Ok `Temperror)
+      | Ok (_, txts) ->
+      match
+        R.(select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record)
+      with
+      | Error `None -> return (Ok `None) (* XXX(dinosaure): see RFC 7208, 4.5 *)
       | Error (`Msg err) ->
           Log.err (fun m ->
-              m "Invalid SPF record: %a: %s." Fmt.(Dump.list string) txts err) ;
+              m "Invalid SPF record: %a: %s."
+                Fmt.(Dump.list string)
+                (Dns.Rr_map.Txt_set.elements txts)
+                err) ;
           return (Ok `Permerror)
       | Ok terms ->
           let record =
@@ -586,3 +597,272 @@ let get_records :
                    mechanisms = List.rev record.mechanisms;
                    modifiers = List.rev record.modifiers;
                  })))
+
+let of_quantifier q match' =
+  match (q, match') with
+  | Pass, true -> `Pass
+  | Fail, true -> `Fail
+  | Softfail, true -> `Softfail
+  | Neutral, true -> `Neutral
+  | _ -> `Continue
+
+let ipv4_with_cidr cidr v4 =
+  Option.fold
+    ~none:(Ipaddr.V4.Prefix.of_addr v4)
+    ~some:(fun v -> Ipaddr.V4.Prefix.make v v4)
+    cidr
+
+let ipv6_with_cidr cidr v6 =
+  Option.fold
+    ~none:(Ipaddr.V6.Prefix.of_addr v6)
+    ~some:(fun v -> Ipaddr.V6.Prefix.make v v6)
+    cidr
+
+let ipaddrs_of_mx :
+    type t dns.
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    Dns.Mx.t ->
+    int option * int option ->
+    ((Ipaddr.Prefix.t list, [> `Temperror ]) result, t) io =
+ fun { return; bind } dns (module DNS) { Dns.Mx.mail_exchange; _ }
+     (cidr_v4, cidr_v6) ->
+  let ( >>= ) = bind in
+  DNS.getrrecord dns Dns.Rr_map.A mail_exchange >>= function
+  | Ok (_, v4s) ->
+      let v4s = Dns.Rr_map.Ipv4_set.elements v4s in
+      let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
+      return (Ok (List.map (fun v -> Ipaddr.V4 v) v4s))
+  | Error _ -> (
+      (* XXX(dinosaure): care about [`Msg _] and return [`Temperror]? *)
+      DNS.getrrecord dns Dns.Rr_map.Aaaa mail_exchange
+      >>= function
+      | Ok (_, v6s) ->
+          let v6s = Dns.Rr_map.Ipv6_set.elements v6s in
+          let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
+          return (Ok (List.map (fun v -> Ipaddr.V6 v) v6s))
+      | Error (`Msg _) -> return (Error `Temperror)
+      | Error (`No_domain _ | `No_data _) -> return (Ok []))
+
+let rec mx_mechanism :
+    type t dns.
+    ctx:ctx ->
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    quantifier ->
+    'a Domain_name.t ->
+    int option * int option ->
+    ([ `Continue | res ], t) io =
+ fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) q domain_name
+     dual_cidr ->
+  let ( >>= ) = bind in
+  DNS.getrrecord dns Dns.Rr_map.Mx domain_name >>= function
+  | Error (`Msg _) -> return `Temperror
+  | Error (`No_data _ | `No_domain _) (* RCODE:3 *) -> return `Continue
+  | Ok (_, mxs) ->
+      go ~limit state dns
+        (module DNS)
+        q (Map.get Map.K.ip ctx)
+        (Dns.Rr_map.Mx_set.elements mxs)
+        dual_cidr
+
+and go :
+    type t dns.
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    quantifier ->
+    Ipaddr.t ->
+    Dns.Mx.t list ->
+    int option * int option ->
+    ([ `Continue | res ], t) io =
+ fun ~limit ({ bind; return } as state) dns (module DNS) q expected mxs
+     dual_cidr ->
+  let ( >>= ) = bind in
+  if limit >= 10
+  then return `Permerror
+  else
+    match mxs with
+    | [] -> return `Continue
+    | mx :: mxs -> (
+        ipaddrs_of_mx state dns (module DNS) mx dual_cidr >>= function
+        | Error `Temperror -> return `Temperror
+        | Ok vs ->
+        match of_quantifier q (List.exists (Ipaddr.Prefix.mem expected) vs) with
+        | `Continue ->
+            go ~limit:(succ limit) state dns
+              (module DNS)
+              q expected mxs dual_cidr
+        | #res as res -> return res)
+
+let a_mechanism :
+    type t dns.
+    ctx:ctx ->
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    quantifier ->
+    'a Domain_name.t ->
+    int option * int option ->
+    ([ `Continue | res ], t) io =
+ fun ~ctx ~limit:_ { bind; return } dns (module DNS) q domain_name
+     (cidr_v4, cidr_v6) ->
+  let ( >>= ) = bind in
+  DNS.getrrecord dns Dns.Rr_map.A domain_name >>= function
+  | Ok (_, v4s) ->
+      let v4s = Dns.Rr_map.Ipv4_set.elements v4s in
+      let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
+      let expected = Map.get Map.K.ip ctx in
+      return
+        (of_quantifier q
+           (List.exists
+              (Ipaddr.Prefix.mem expected)
+              (List.map (fun v -> Ipaddr.V4 v) v4s)))
+  | Error _ -> (
+      DNS.getrrecord dns Dns.Rr_map.Aaaa domain_name >>= function
+      | Ok (_, v6s) ->
+          let v6s = Dns.Rr_map.Ipv6_set.elements v6s in
+          let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
+          let expected = Map.get Map.K.ip ctx in
+          return
+            (of_quantifier q
+               (List.exists
+                  (Ipaddr.Prefix.mem expected)
+                  (List.map (fun v -> Ipaddr.V6 v) v6s)))
+      | Error (`Msg _) -> return `Temperror
+      | Error (`No_domain _ | `No_data _) -> return `Continue)
+
+let exists_mechanism :
+    type t dns.
+    ctx:ctx ->
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    quantifier ->
+    'a Domain_name.t ->
+    ([ `Continue | res ], t) io =
+ fun ~ctx:_ ~limit:_ { bind; return } dns (module DNS) q domain_name ->
+  let ( >>= ) = bind in
+  DNS.getrrecord dns Dns.Rr_map.A domain_name >>= function
+  | Ok _ -> return (of_quantifier q true)
+  | Error _ -> (
+      DNS.getrrecord dns Dns.Rr_map.Aaaa domain_name >>= function
+      | Ok _ -> return (of_quantifier q true)
+      | Error (`Msg _) -> return `Temperror
+      | Error (`No_domain _ | `No_data _) -> return `Continue)
+
+let rec include_mechanism :
+    type t dns.
+    ctx:ctx ->
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    quantifier ->
+    'a Domain_name.t ->
+    ([ `Continue | res ], t) io =
+ fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) q domain_name ->
+  let ( >>= ) = bind in
+  let domain_name = Domain_name.host_exn domain_name in
+  (* TODO(dinosaure): may be we don't need to sanitize the given domain-name. *)
+  let ctx = Map.add Map.K.domain domain_name ctx in
+  DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
+  | Error (`Msg _) -> return `Temperror
+  | Error (`No_domain _ | `No_data _) -> return `Permerror
+  | Ok (_, txts) ->
+  match
+    R.(select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record)
+  with
+  | Error `None | Error (`Msg _) -> return `Permerror
+  | Ok terms -> (
+      let record =
+        List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
+      in
+      check ~ctx ~limit:(succ limit) state dns (module DNS) record >>= function
+      | `Permerror | `None -> return `Permerror
+      | `Temperror -> return `Temperror
+      | `Pass -> return (of_quantifier q true)
+      | `Fail | `Softfail | `Neutral -> return (of_quantifier q false))
+
+and apply :
+    type t dns.
+    ctx:ctx ->
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    quantifier * mechanism ->
+    ([ `Continue | res ], t) io =
+ fun ~ctx ~limit ({ return; _ } as state) dns (module DNS) (q, mechanism) ->
+  match mechanism with
+  | All -> return (of_quantifier q true)
+  | A (Some domain_name, cidr_ipv4, cidr_ipv6) ->
+      a_mechanism ~ctx ~limit state dns
+        (module DNS)
+        q domain_name (cidr_ipv4, cidr_ipv6)
+  | Mx (Some domain_name, cidr_ipv4, cidr_ipv6) ->
+      mx_mechanism ~ctx ~limit state dns
+        (module DNS)
+        q domain_name (cidr_ipv4, cidr_ipv6)
+  | Include domain_name ->
+      include_mechanism ~ctx ~limit state dns (module DNS) q domain_name
+  | V4 v4 ->
+      return
+        (of_quantifier q
+           (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V4 v4)))
+  | V6 v6 ->
+      return
+        (of_quantifier q
+           (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6)))
+  | A (None, _, _) | Mx (None, _, _) -> return `Continue
+  | Exists domain_name ->
+      exists_mechanism ~ctx ~limit state dns (module DNS) q domain_name
+  | Ptr _ -> assert false
+
+and check :
+    type t dns.
+    ctx:ctx ->
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    record ->
+    (res, t) io =
+ fun ~ctx ~limit state dns (module DNS) record ->
+  go ~ctx ~limit state dns (module DNS) record.mechanisms
+
+and go :
+    type t dns.
+    ctx:ctx ->
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    (quantifier * mechanism) list ->
+    (res, t) io =
+ fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) -> function
+  | [] -> assert false (* TODO *)
+  | (q, mechanism) :: r when limit < 10 -> (
+      let ( >>= ) = bind in
+      apply ~ctx ~limit state dns (module DNS) (q, mechanism) >>= function
+      | `Continue -> go ~ctx ~limit:(succ limit) state dns (module DNS) r
+      | #res as res -> return res)
+  | _ -> return `Permerror
+
+let check :
+    type t dns.
+    ctx:ctx ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    [ res | `Record of record ] ->
+    (res, t) io =
+ fun ~ctx ({ return; _ } as state) dns (module DNS) -> function
+  | #res as res -> return res
+  | `Record record -> check ~ctx ~limit:0 state dns (module DNS) record

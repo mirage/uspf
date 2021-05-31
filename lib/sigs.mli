@@ -26,9 +26,14 @@ module type DNS = sig
 
   type t
 
-  val getaddrinfo :
+  type error =
+    [ `Msg of string
+    | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
+    | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
+
+  val getrrecord :
     t ->
-    [ `TXT | `A | `AAAA | `MX ] ->
+    'v Dns.Rr_map.rr ->
     'a Domain_name.t ->
-    ((string list, [> `Msg of string ]) result, backend) io
+    (('v, [> error ]) result, backend) io
 end

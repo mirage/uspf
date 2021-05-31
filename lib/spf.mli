@@ -22,7 +22,8 @@ module Macro : sig
 
   type t = macro list * string option
 
-  val expand_string : ctx -> string -> (string, [> `Msg of string ]) result
+  val expand_string :
+    ctx -> string -> ([ `raw ] Domain_name.t, [> `Msg of string ]) result
 end
 
 module Term : sig
@@ -47,13 +48,22 @@ end
 
 type record
 
+type res =
+  [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ]
+
 val pp : record Fmt.t
 
-val get_records :
-  ctx ->
+val record :
+  ctx:ctx ->
   't state ->
   'dns ->
   (module DNS with type t = 'dns and type backend = 't) ->
-  ( ([ `None | `Permerror | `Record of record ], [> `Msg of string ]) result,
-    't )
-  io
+  (([ res | `Record of record ], [> `Msg of string ]) result, 't) io
+
+val check :
+  ctx:ctx ->
+  't state ->
+  'dns ->
+  (module DNS with type t = 'dns and type backend = 't) ->
+  [ res | `Record of record ] ->
+  (res, 't) io
