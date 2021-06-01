@@ -559,6 +559,15 @@ let rec select_spf1 = function
 type res =
   [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ]
 
+let pp_res ppf = function
+  | `None -> Fmt.pf ppf "none"
+  | `Neutral -> Fmt.pf ppf "neutral"
+  | `Pass -> Fmt.pf ppf "pass"
+  | `Fail -> Fmt.pf ppf "fail"
+  | `Softfail -> Fmt.pf ppf "softfail"
+  | `Temperror -> Fmt.pf ppf "temperror"
+  | `Permerror -> Fmt.pf ppf "permerror"
+
 let record :
     type dns t.
     ctx:ctx ->
@@ -573,7 +582,9 @@ let record :
   | Some domain_name -> (
       DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
       | Error (`No_domain _ | `No_data _) -> return (Ok `None)
-      | Error (`Msg _) -> return (Ok `Temperror)
+      | Error (`Msg err) ->
+          Log.err (fun m -> m "Got an error while requesting DNS: %s." err) ;
+          return (Ok `Temperror)
       | Ok (_, txts) ->
       match
         R.(select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record)
@@ -803,20 +814,30 @@ and apply :
   match mechanism with
   | All -> return (of_quantifier q true)
   | A (Some domain_name, cidr_ipv4, cidr_ipv6) ->
+      Log.debug (fun m ->
+          m "Apply A mechanism with %a." Domain_name.pp domain_name) ;
       a_mechanism ~ctx ~limit state dns
         (module DNS)
         q domain_name (cidr_ipv4, cidr_ipv6)
   | Mx (Some domain_name, cidr_ipv4, cidr_ipv6) ->
+      Log.debug (fun m ->
+          m "Apply MX mechanism with %a." Domain_name.pp domain_name) ;
       mx_mechanism ~ctx ~limit state dns
         (module DNS)
         q domain_name (cidr_ipv4, cidr_ipv6)
   | Include domain_name ->
+      Log.debug (fun m ->
+          m "Apply INCLUDE mechanism with %a." Domain_name.pp domain_name) ;
       include_mechanism ~ctx ~limit state dns (module DNS) q domain_name
   | V4 v4 ->
+      Log.debug (fun m ->
+          m "Apply IPv4 mechanism with %a." Ipaddr.V4.Prefix.pp v4) ;
       return
         (of_quantifier q
            (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V4 v4)))
   | V6 v6 ->
+      Log.debug (fun m ->
+          m "Apply IPv6 mechanism with %a." Ipaddr.V6.Prefix.pp v6) ;
       return
         (of_quantifier q
            (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6)))

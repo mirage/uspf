@@ -24,7 +24,7 @@ module DNS = struct
     @@ Dns_client_unix.get_resource_record dns response domain_name
 end
 
-let check ~ctx =
-  let dns = Dns_client_unix.create ~timeout:5_000_000L () in
+let check ?nameserver ~timeout ctx =
+  let dns = Dns_client_unix.create ?nameserver ~timeout () in
   Spf.record ~ctx state dns (module DNS) |> Unix_scheduler.prj >>| fun record ->
   Spf.check ~ctx state dns (module DNS) record |> Unix_scheduler.prj

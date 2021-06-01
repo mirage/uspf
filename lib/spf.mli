@@ -53,6 +53,8 @@ type res =
 
 val pp : record Fmt.t
 
+val pp_res : res Fmt.t
+
 val record :
   ctx:ctx ->
   't state ->
