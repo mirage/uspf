@@ -12,7 +12,7 @@ let empty = Map.empty
 
 let with_sender sender ctx =
   match sender with
-  | `HELO domain_name ->
+  | `HELO (domain_name : [ `raw ] Domain_name.t) ->
       let domain = Colombe.Domain.Domain (Domain_name.to_strings domain_name) in
       let ctx = Map.add Map.K.helo domain ctx in
       let ctx = Map.add Map.K.domain_of_sender domain ctx in
@@ -32,8 +32,7 @@ let with_sender sender ctx =
         | Colombe.Domain.Extension _ ->
             ctx
         | Colombe.Domain.Domain vs ->
-            Map.add Map.K.domain Domain_name.(host_exn (of_strings_exn vs)) ctx
-      in
+            Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx in
       ctx
 
 let with_ip ip ctx =
@@ -326,7 +325,7 @@ module Term = struct
     option None ip4_cidr_length >>= fun cidr ->
     let str =
       Fmt.str "%s.%s.%s.%s%a" a b c d
-        Fmt.(option ~none:(const string "/0") (prefix (const string "/") int))
+        Fmt.(option ~none:(const string "/32") (prefix (const string "/") int))
         cidr in
     return (`V4 (Ipaddr.V4.Prefix.of_string_exn str))
 
@@ -338,7 +337,7 @@ module Term = struct
     *> ip6_network
     >>= fun v6 ->
     option None ip6_cidr_length >>= fun cidr ->
-    let cidr = Option.value ~default:0 cidr in
+    let cidr = Option.value ~default:128 cidr in
     return (`V6 (Ipaddr.V6.Prefix.make cidr v6))
 
   let exists =
@@ -780,8 +779,6 @@ let rec include_mechanism :
     ([ `Continue | res ], t) io =
  fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) q domain_name ->
   let ( >>= ) = bind in
-  let domain_name = Domain_name.host_exn domain_name in
-  (* TODO(dinosaure): may be we don't need to sanitize the given domain-name. *)
   let ctx = Map.add Map.K.domain domain_name ctx in
   DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
   | Error (`Msg _) -> return `Temperror
@@ -795,6 +792,12 @@ let rec include_mechanism :
       let record =
         List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
       in
+      let record =
+        {
+          mechanisms = List.rev record.mechanisms;
+          modifiers = List.rev record.modifiers;
+        } in
+      Log.debug (fun m -> m "Compute new record: %a." pp record) ;
       check ~ctx ~limit:(succ limit) state dns (module DNS) record >>= function
       | `Permerror | `None -> return `Permerror
       | `Temperror -> return `Temperror
@@ -872,7 +875,7 @@ and go :
   | (q, mechanism) :: r when limit < 10 -> (
       let ( >>= ) = bind in
       apply ~ctx ~limit state dns (module DNS) (q, mechanism) >>= function
-      | `Continue -> go ~ctx ~limit:(succ limit) state dns (module DNS) r
+      | `Continue -> go ~ctx ~limit state dns (module DNS) r
       | #res as res -> return res)
   | _ -> return `Permerror
 
@@ -887,3 +890,85 @@ let check :
  fun ~ctx ({ return; _ } as state) dns (module DNS) -> function
   | #res as res -> return res
   | `Record record -> check ~ctx ~limit:0 state dns (module DNS) record
+
+module Encoder = struct
+  open Prettym
+
+  let res ppf = function
+    | `None -> string ppf "none"
+    | `Neutral -> string ppf "neutral"
+    | `Pass -> string ppf "pass"
+    | `Fail -> string ppf "fail"
+    | `Softfail -> string ppf "softfail"
+    | `Temperror -> string ppf "temperror"
+    | `Permerror -> string ppf "permerror"
+
+  let cut : type v. unit -> (v, v) order = fun () -> break ~indent:1 ~len:0
+
+  let to_safe_string pp v = Fmt.str "%a" pp v (* TODO *)
+
+  let kv :
+      type a v. name:string -> a Map.key -> ?pp:a Fmt.t -> Map.t -> (v, v) fmt =
+   fun ~name key ?pp ctx ->
+    match Map.find key ctx with
+    | None -> [ cut () ]
+    | Some v ->
+        let pp =
+          match pp with Some pp -> pp | None -> (Map.Key.info key).Map.pp in
+        [
+          spaces 1;
+          string $ name;
+          cut ();
+          char $ '=';
+          cut ();
+          string $ to_safe_string pp v;
+          cut ();
+          char $ ';';
+        ]
+
+  let ( ^^ ) a b = concat a b
+
+  let pp_identity ppf = function
+    | `MAILFROM _ -> Fmt.string ppf "mailfrom"
+    | `HELO _ -> Fmt.string ppf "helo"
+
+  (* TODO(dinosaure):
+     - [mechanism]
+     - [problem]
+     - [receiver] *)
+
+  let field ~ctx ?receiver ppf v =
+    eval ppf
+      ([ !!res ]
+      ^^ kv ~name:"client-ip" Map.K.ip ~pp:Ipaddr.pp ctx
+      ^^ kv ~name:"envelope-from" Map.K.sender ctx
+      ^^ kv ~name:"helo" Map.K.helo ctx
+      ^^ kv ~name:"identity" Map.K.sender ~pp:pp_identity ctx
+      ^^ (match receiver with
+         | None -> [ cut () ]
+         | Some receiver ->
+             [
+               spaces 1;
+               string $ "receiver";
+               cut ();
+               char $ '=';
+               cut ();
+               string $ Domain_name.to_string receiver;
+               cut ();
+               char $ ';';
+             ])
+      ^^ [ new_line ])
+      v
+end
+
+let to_field :
+    ctx:ctx ->
+    ?receiver:'a Domain_name.t ->
+    res ->
+    Mrmime.Field_name.t * Unstrctrd.t =
+ fun ~ctx ?receiver res ->
+  let field_name = Mrmime.Field_name.v "Received-SPF" in
+  let v = Prettym.to_string (Encoder.field ~ctx ?receiver) res in
+  let _, v =
+    match Unstrctrd.of_string v with Ok v -> v | Error _ -> assert false in
+  (field_name, v)

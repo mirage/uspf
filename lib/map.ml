@@ -50,11 +50,11 @@ module K = struct
             (h land 0xf) in
     Key.create { name = "<ip>"; pp }
 
-  let domain : [ `host ] Domain_name.t key =
+  let domain : [ `raw ] Domain_name.t key =
     Key.create { name = "<domain>"; pp = Domain_name.pp }
 
   let sender :
-      [ `HELO of [ `host ] Domain_name.t | `MAILFROM of Colombe.Path.t ] key =
+      [ `HELO of [ `raw ] Domain_name.t | `MAILFROM of Colombe.Path.t ] key =
     let pp ppf = function
       | `HELO v -> Domain_name.pp ppf v
       | `MAILFROM v -> pp_path ppf v in

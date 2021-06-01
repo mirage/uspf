@@ -6,7 +6,7 @@ type ctx
 val empty : ctx
 
 val with_sender :
-  [ `HELO of [ `host ] Domain_name.t | `MAILFROM of Colombe.Path.t ] ->
+  [ `HELO of [ `raw ] Domain_name.t | `MAILFROM of Colombe.Path.t ] ->
   ctx ->
   ctx
 
@@ -69,3 +69,9 @@ val check :
   (module DNS with type t = 'dns and type backend = 't) ->
   [ res | `Record of record ] ->
   (res, 't) io
+
+val to_field :
+  ctx:ctx ->
+  ?receiver:'a Domain_name.t ->
+  res ->
+  Mrmime.Field_name.t * Unstrctrd.t

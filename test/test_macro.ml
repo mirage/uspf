@@ -6,8 +6,7 @@ let test01 =
   Alcotest.test_case "rfc7208" `Quick @@ fun () ->
   let ctx =
     Spf.empty
-    |> Spf.with_sender
-         (`HELO Domain_name.(host_exn (of_string_exn "mx.example.org")))
+    |> Spf.with_sender (`HELO (Domain_name.of_string_exn "mx.example.org"))
     |> Spf.with_sender
          (`MAILFROM
            (Colombe.Path.of_string_exn "<strong-bad@email.example.com>")) in
@@ -73,8 +72,7 @@ let test02 =
   let ctx =
     Spf.empty
     |> Spf.with_ip (Ipaddr.of_string_exn "192.0.2.3")
-    |> Spf.with_sender
-         (`HELO Domain_name.(host_exn (of_string_exn "mx.example.org")))
+    |> Spf.with_sender (`HELO (Domain_name.of_string_exn "mx.example.org"))
     |> Spf.with_sender
          (`MAILFROM
            (Colombe.Path.of_string_exn "<strong-bad@email.example.com>")) in
