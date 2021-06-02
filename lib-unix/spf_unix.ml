@@ -24,7 +24,18 @@ module DNS = struct
     @@ Dns_client_unix.get_resource_record dns response domain_name
 end
 
+module Flow = struct
+  type flow = in_channel
+
+  and backend = Unix_scheduler.t
+
+  let input ic tmp off len = Unix_scheduler.inj @@ input ic tmp off len
+end
+
 let check ?nameserver ~timeout ctx =
   let dns = Dns_client_unix.create ?nameserver ~timeout () in
   Spf.record ~ctx state dns (module DNS) |> Unix_scheduler.prj >>| fun record ->
   Spf.check ~ctx state dns (module DNS) record |> Unix_scheduler.prj
+
+let extract_received_spf ?newline ic =
+  Spf.extract_received_spf ?newline ic state (module Flow) |> Unix_scheduler.prj
