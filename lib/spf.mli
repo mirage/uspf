@@ -48,8 +48,16 @@ end
 
 type record
 
+type mechanism
+
 type res =
-  [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ]
+  [ `None
+  | `Neutral
+  | `Pass of mechanism
+  | `Fail
+  | `Softfail
+  | `Temperror
+  | `Permerror ]
 
 val pp : record Fmt.t
 

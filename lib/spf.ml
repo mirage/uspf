@@ -556,12 +556,18 @@ let rec select_spf1 = function
   | _ :: r -> select_spf1 r
 
 type res =
-  [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ]
+  [ `None
+  | `Neutral
+  | `Pass of mechanism
+  | `Fail
+  | `Softfail
+  | `Temperror
+  | `Permerror ]
 
 let pp_res ppf = function
   | `None -> Fmt.pf ppf "none"
   | `Neutral -> Fmt.pf ppf "neutral"
-  | `Pass -> Fmt.pf ppf "pass"
+  | `Pass _ -> Fmt.pf ppf "pass"
   | `Fail -> Fmt.pf ppf "fail"
   | `Softfail -> Fmt.pf ppf "softfail"
   | `Temperror -> Fmt.pf ppf "temperror"
@@ -608,9 +614,9 @@ let record :
                    modifiers = List.rev record.modifiers;
                  })))
 
-let of_quantifier q match' =
+let of_quantifier ~mechanism q match' =
   match (q, match') with
-  | Pass, true -> `Pass
+  | Pass, true -> `Pass mechanism
   | Fail, true -> `Fail
   | Softfail, true -> `Softfail
   | Neutral, true -> `Neutral
@@ -677,7 +683,7 @@ let rec mx_mechanism :
         (module DNS)
         q (Map.get Map.K.ip ctx)
         (Dns.Rr_map.Mx_set.elements mxs)
-        dual_cidr
+        domain_name dual_cidr
 
 and go :
     type t dns.
@@ -688,25 +694,30 @@ and go :
     quantifier ->
     Ipaddr.t ->
     Dns.Mx.t list ->
+    [ `raw ] Domain_name.t ->
     int option * int option ->
     ([ `Continue | res ], t) io =
  fun ~limit ({ bind; return } as state) dns (module DNS) q expected mxs
-     dual_cidr ->
+     domain_name ((cidr_v4, cidr_v6) as dual_cidr) ->
   let ( >>= ) = bind in
   if limit >= 10
   then return `Permerror
   else
+    let mechanism = Mx (Some domain_name, cidr_v4, cidr_v6) in
     match mxs with
     | [] -> return `Continue
     | mx :: mxs -> (
         ipaddrs_of_mx state dns (module DNS) mx dual_cidr >>= function
         | Error `Temperror -> return `Temperror
         | Ok vs ->
-        match of_quantifier q (List.exists (Ipaddr.Prefix.mem expected) vs) with
+        match
+          of_quantifier ~mechanism q
+            (List.exists (Ipaddr.Prefix.mem expected) vs)
+        with
         | `Continue ->
             go ~limit:(succ limit) state dns
               (module DNS)
-              q expected mxs dual_cidr
+              q expected mxs domain_name dual_cidr
         | #res as res -> return res)
 
 let a_mechanism :
@@ -723,13 +734,14 @@ let a_mechanism :
  fun ~ctx ~limit:_ { bind; return } dns (module DNS) q domain_name
      (cidr_v4, cidr_v6) ->
   let ( >>= ) = bind in
+  let mechanism = A (Some domain_name, cidr_v4, cidr_v6) in
   DNS.getrrecord dns Dns.Rr_map.A domain_name >>= function
   | Ok (_, v4s) ->
       let v4s = Dns.Rr_map.Ipv4_set.elements v4s in
       let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
       let expected = Map.get Map.K.ip ctx in
       return
-        (of_quantifier q
+        (of_quantifier ~mechanism q
            (List.exists
               (Ipaddr.Prefix.mem expected)
               (List.map (fun v -> Ipaddr.V4 v) v4s)))
@@ -740,7 +752,7 @@ let a_mechanism :
           let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
           let expected = Map.get Map.K.ip ctx in
           return
-            (of_quantifier q
+            (of_quantifier ~mechanism q
                (List.exists
                   (Ipaddr.Prefix.mem expected)
                   (List.map (fun v -> Ipaddr.V6 v) v6s)))
@@ -759,11 +771,12 @@ let exists_mechanism :
     ([ `Continue | res ], t) io =
  fun ~ctx:_ ~limit:_ { bind; return } dns (module DNS) q domain_name ->
   let ( >>= ) = bind in
+  let mechanism = Exists domain_name in
   DNS.getrrecord dns Dns.Rr_map.A domain_name >>= function
-  | Ok _ -> return (of_quantifier q true)
+  | Ok _ -> return (of_quantifier ~mechanism q true)
   | Error _ -> (
       DNS.getrrecord dns Dns.Rr_map.Aaaa domain_name >>= function
-      | Ok _ -> return (of_quantifier q true)
+      | Ok _ -> return (of_quantifier ~mechanism q true)
       | Error (`Msg _) -> return `Temperror
       | Error (`No_domain _ | `No_data _) -> return `Continue)
 
@@ -801,8 +814,8 @@ let rec include_mechanism :
       check ~ctx ~limit:(succ limit) state dns (module DNS) record >>= function
       | `Permerror | `None -> return `Permerror
       | `Temperror -> return `Temperror
-      | `Pass -> return (of_quantifier q true)
-      | `Fail | `Softfail | `Neutral -> return (of_quantifier q false))
+      | `Pass mechanism -> return (of_quantifier ~mechanism q true)
+      | `Fail | `Softfail | `Neutral -> return `Continue)
 
 and apply :
     type t dns.
@@ -815,7 +828,7 @@ and apply :
     ([ `Continue | res ], t) io =
  fun ~ctx ~limit ({ return; _ } as state) dns (module DNS) (q, mechanism) ->
   match mechanism with
-  | All -> return (of_quantifier q true)
+  | All -> return (of_quantifier ~mechanism q true)
   | A (Some domain_name, cidr_ipv4, cidr_ipv6) ->
       Log.debug (fun m ->
           m "Apply A mechanism with %a." Domain_name.pp domain_name) ;
@@ -836,18 +849,19 @@ and apply :
       Log.debug (fun m ->
           m "Apply IPv4 mechanism with %a." Ipaddr.V4.Prefix.pp v4) ;
       return
-        (of_quantifier q
+        (of_quantifier ~mechanism q
            (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V4 v4)))
   | V6 v6 ->
       Log.debug (fun m ->
           m "Apply IPv6 mechanism with %a." Ipaddr.V6.Prefix.pp v6) ;
       return
-        (of_quantifier q
+        (of_quantifier ~mechanism q
            (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6)))
   | A (None, _, _) | Mx (None, _, _) -> return `Continue
   | Exists domain_name ->
       exists_mechanism ~ctx ~limit state dns (module DNS) q domain_name
   | Ptr _ -> assert false
+ (* TODO *)
 
 and check :
     type t dns.
@@ -897,7 +911,7 @@ module Encoder = struct
   let res ppf = function
     | `None -> string ppf "none"
     | `Neutral -> string ppf "neutral"
-    | `Pass -> string ppf "pass"
+    | `Pass _ -> string ppf "pass"
     | `Fail -> string ppf "fail"
     | `Softfail -> string ppf "softfail"
     | `Temperror -> string ppf "temperror"
@@ -934,8 +948,7 @@ module Encoder = struct
 
   (* TODO(dinosaure):
      - [mechanism]
-     - [problem]
-     - [receiver] *)
+     - [problem] *)
 
   let field ~ctx ?receiver ppf v =
     eval ppf
@@ -957,6 +970,19 @@ module Encoder = struct
                cut ();
                char $ ';';
              ])
+      ^^ (match v with
+         | `Pass m ->
+             [
+               spaces 1;
+               string $ "mechanism";
+               cut ();
+               char $ '=';
+               cut ();
+               string $ to_safe_string pp_mechanism m;
+               cut ();
+               char $ ';';
+             ]
+         | _ -> [ cut () ])
       ^^ [ new_line ])
       v
 end
