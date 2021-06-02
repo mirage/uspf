@@ -1,3 +1,5 @@
+[@@@warning "-30"]
+
 module Sigs = Sigs
 open Sigs
 
@@ -79,7 +81,24 @@ val check :
   (res, 't) io
 
 val to_field :
-  ctx:ctx ->
-  ?receiver:'a Domain_name.t ->
-  res ->
-  Mrmime.Field_name.t * Unstrctrd.t
+  ctx:ctx -> ?receiver:Emile.domain -> res -> Mrmime.Field_name.t * Unstrctrd.t
+
+type newline = LF | CRLF
+
+type extracted = { sender : Emile.mailbox option; received_spf : spf list }
+
+and spf = {
+  result :
+    [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ];
+  receiver : Emile.domain option;
+  sender : Emile.mailbox option;
+  ip : Ipaddr.t option;
+  ctx : ctx;
+}
+
+val extract_received_spf :
+  ?newline:newline ->
+  'flow ->
+  't state ->
+  (module Sigs.FLOW with type flow = 'flow and type backend = 't) ->
+  ((extracted, [> `Msg of string ]) result, 't) io

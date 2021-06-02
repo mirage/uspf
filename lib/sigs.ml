@@ -33,6 +33,14 @@ module Make (T : FUNCTOR) = struct
   include Common
 end
 
+module type FLOW = sig
+  type backend
+
+  type flow
+
+  val input : flow -> bytes -> int -> int -> (int, backend) io
+end
+
 module type DNS = sig
   type backend
 

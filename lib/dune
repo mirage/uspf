@@ -1,4 +1,14 @@
 (library
  (name spf)
  (public_name spf)
- (libraries rresult mrmime dns logs colombe ipaddr hmap angstrom domain-name))
+ (libraries
+  rresult
+  colombe.emile
+  mrmime
+  dns
+  logs
+  colombe
+  ipaddr
+  hmap
+  angstrom
+  domain-name))

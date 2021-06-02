@@ -27,12 +27,12 @@ let with_sender sender ctx =
       let ctx = Map.add Map.K.domain_of_sender domain ctx in
       let ctx = Map.add Map.K.sender sender ctx in
       let ctx =
-        match domain with
-        | Colombe.Domain.IPv4 _ | Colombe.Domain.IPv6 _
-        | Colombe.Domain.Extension _ ->
-            ctx
-        | Colombe.Domain.Domain vs ->
-            Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx in
+        match (domain, Map.find Map.K.domain ctx) with
+        | Colombe.Domain.Domain vs, None ->
+            (* XXX(dinosaure): assume that an [HELO] should be already done with
+             * the same domain-name. *)
+            Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx
+        | _ -> ctx in
       ctx
 
 let with_ip ip ctx =
@@ -917,26 +917,24 @@ module Encoder = struct
     | `Temperror -> string ppf "temperror"
     | `Permerror -> string ppf "permerror"
 
-  let cut : type v. unit -> (v, v) order = fun () -> break ~indent:1 ~len:0
-
   let to_safe_string pp v = Fmt.str "%a" pp v (* TODO *)
 
   let kv :
       type a v. name:string -> a Map.key -> ?pp:a Fmt.t -> Map.t -> (v, v) fmt =
    fun ~name key ?pp ctx ->
     match Map.find key ctx with
-    | None -> [ cut () ]
+    | None -> [ cut ]
     | Some v ->
         let pp =
           match pp with Some pp -> pp | None -> (Map.Key.info key).Map.pp in
         [
           spaces 1;
           string $ name;
-          cut ();
+          cut;
           char $ '=';
-          cut ();
+          cut;
           string $ to_safe_string pp v;
-          cut ();
+          cut;
           char $ ';';
         ]
 
@@ -946,28 +944,99 @@ module Encoder = struct
     | `MAILFROM _ -> Fmt.string ppf "mailfrom"
     | `HELO _ -> Fmt.string ppf "helo"
 
-  (* TODO(dinosaure):
-     - [mechanism]
-     - [problem] *)
+  let sender ppf v = eval ppf [ !!string ] (Fmt.to_to_string Map.pp_path v)
+
+  let domain_name ppf = function
+    | `Addr (Emile.IPv4 v) -> eval ppf [ !!string ] (Ipaddr.V4.to_string v)
+    | `Addr (Emile.IPv6 v) -> eval ppf [ !!string ] (Ipaddr.V6.to_string v)
+    | `Addr (Emile.Ext (k, v)) ->
+        eval ppf [ char $ '['; !!string; char $ ':'; !!string; char $ ']' ] k v
+    | `Domain vs ->
+        let sep = ((fun ppf () -> string ppf "."), ()) in
+        eval ppf [ !!(list ~sep string) ] vs
+    | `Literal v -> eval ppf [ char $ '['; !!string; char $ ']' ] v
+
+  let ipaddr ppf v = eval ppf [ !!string ] (Ipaddr.to_string v)
+
+  let comment ~ctx ?receiver ppf (v : res) =
+    match (receiver, Map.get Map.K.sender ctx, v) with
+    | None, _, _ -> ppf
+    | Some receiver, `MAILFROM p, `Pass _ ->
+        eval ppf
+          [
+            spaces 1;
+            char $ '(';
+            !!domain_name;
+            char $ ':';
+            spaces 1;
+            string $ "domain";
+            spaces 1;
+            string $ "of";
+            spaces 1;
+            !!sender;
+            spaces 1;
+            string $ "designates";
+            spaces 1;
+            !!ipaddr;
+            spaces 1;
+            string $ "as";
+            spaces 1;
+            string $ "permitted";
+            spaces 1;
+            string $ "sender";
+            char $ ')';
+          ]
+          receiver p (Map.get Map.K.ip ctx)
+    | Some receiver, `MAILFROM p, _ ->
+        eval ppf
+          [
+            spaces 1;
+            char $ '(';
+            !!domain_name;
+            char $ ':';
+            spaces 1;
+            string $ "domain";
+            spaces 1;
+            string $ "of";
+            spaces 1;
+            !!sender;
+            spaces 1;
+            string $ "does";
+            spaces 1;
+            string $ "not";
+            spaces 1;
+            string $ "designates";
+            spaces 1;
+            !!ipaddr;
+            spaces 1;
+            string $ "as";
+            spaces 1;
+            string $ "permitted";
+            spaces 1;
+            string $ "sender";
+            char $ ')';
+          ]
+          receiver p (Map.get Map.K.ip ctx)
+    | Some _, `HELO _, _ -> ppf
 
   let field ~ctx ?receiver ppf v =
     eval ppf
-      ([ !!res ]
+      ([ tbox 1; !!res; !!(comment ~ctx ?receiver) ]
       ^^ kv ~name:"client-ip" Map.K.ip ~pp:Ipaddr.pp ctx
       ^^ kv ~name:"envelope-from" Map.K.sender ctx
       ^^ kv ~name:"helo" Map.K.helo ctx
       ^^ kv ~name:"identity" Map.K.sender ~pp:pp_identity ctx
       ^^ (match receiver with
-         | None -> [ cut () ]
+         | None -> [ cut ]
          | Some receiver ->
              [
                spaces 1;
                string $ "receiver";
-               cut ();
+               cut;
                char $ '=';
-               cut ();
-               string $ Domain_name.to_string receiver;
-               cut ();
+               cut;
+               string $ Fmt.to_to_string Emile.pp_domain receiver;
+               cut;
                char $ ';';
              ])
       ^^ (match v with
@@ -975,26 +1044,402 @@ module Encoder = struct
              [
                spaces 1;
                string $ "mechanism";
-               cut ();
+               cut;
                char $ '=';
-               cut ();
+               cut;
                string $ to_safe_string pp_mechanism m;
-               cut ();
+               cut;
                char $ ';';
              ]
-         | _ -> [ cut () ])
-      ^^ [ new_line ])
-      v
+         | _ -> [ cut ])
+      ^^ [ close; new_line ])
+      v v
 end
+
+let received_spf = Mrmime.Field_name.v "Received-SPF"
 
 let to_field :
     ctx:ctx ->
-    ?receiver:'a Domain_name.t ->
+    ?receiver:Emile.domain ->
     res ->
     Mrmime.Field_name.t * Unstrctrd.t =
  fun ~ctx ?receiver res ->
-  let field_name = Mrmime.Field_name.v "Received-SPF" in
   let v = Prettym.to_string (Encoder.field ~ctx ?receiver) res in
   let _, v =
     match Unstrctrd.of_string v with Ok v -> v | Error _ -> assert false in
-  (field_name, v)
+  (received_spf, v)
+
+[@@@warning "-27-32"]
+
+module Decoder = struct
+  open Angstrom
+
+  let is_alpha = function 'A' .. 'Z' | 'a' .. 'z' -> true | _ -> false
+
+  let is_space = ( = ) ' '
+
+  let result =
+    choice
+      [
+        (string "pass" >>| fun _ -> `Pass);
+        (string "fail" >>| fun _ -> `Fail);
+        (string "softfail" >>| fun _ -> `Softfail);
+        (string "neutral" >>| fun _ -> `Neutral);
+        (string "none" >>| fun _ -> `None);
+        (string "temperror" >>| fun _ -> `Temperror);
+        (string "permerror" >>| fun _ -> `Permerror);
+      ]
+
+  let key =
+    let name =
+      satisfy is_alpha >>= fun x ->
+      (take_while @@ function
+       | 'a' .. 'z' | 'A' .. 'Z' -> true
+       | '0' .. '9' -> true
+       | '-' | '_' | '.' -> true
+       | _ -> false)
+      >>= fun r -> return (String.make 1 x ^ r) in
+    choice
+      [
+        string "client-ip";
+        string "envelope-from";
+        string "helo";
+        string "problem";
+        string "receiver";
+        string "identity";
+        string "mechanism";
+        name;
+      ]
+
+  (* XXX(dinosaure): [dot-atom] and [quoted-string] are specified by RFC 5322
+   * and they are implemented by [emile]/[mrmime]. We took them in this case. *)
+
+  let dot_atom = Emile.Parser.dot_atom >>| String.concat "."
+
+  let quoted_string = Emile.Parser.quoted_string
+
+  let key_value_pair =
+    key >>= fun key ->
+    skip_while is_space
+    *> char '='
+    *> skip_while is_space
+    *> (dot_atom <|> quoted_string)
+    >>= fun value -> return (key, value)
+
+  let key_value_list =
+    key_value_pair >>= fun x ->
+    many
+      (skip_while is_space *> char ';' *> skip_while is_space *> key_value_pair)
+    >>= fun r ->
+    option () (skip_while is_space *> char ';' *> skip_while is_space)
+    >>= fun () -> return (x :: r)
+
+  let ipaddr =
+    Term.ip6_network
+    >>| (fun v -> Ipaddr.V6 v)
+    <|> ( Term.ip4_network >>| fun (a, b, c, d) ->
+          Ipaddr.V4 (Ipaddr.V4.of_string_exn (Fmt.str "%s.%s.%s.%s" a b c d)) )
+
+  (* XXX(dinosaure): this part is not specified but it can give to us informations such as 
+   * the domain of the [receiver], the mailbox of the [sender] (it should be the same as [From])
+   * and the IP address of the [sender]. *)
+
+  let good_comment =
+    char '(' *> skip_while is_space *> Emile.Parser.domain >>= fun receiver ->
+    skip_while is_space
+    *> char ':'
+    *> skip_while is_space
+    *> string "domain"
+    *> skip_while is_space
+    *> string "of"
+    *> skip_while is_space
+    *> Emile.Parser.addr_spec
+    >>= fun sender ->
+    skip_while is_space *> string "designates" *> skip_while is_space *> ipaddr
+    >>= fun ip ->
+    skip_while is_space
+    *> string "as"
+    *> skip_while is_space
+    *> string "permitted"
+    *> skip_while is_space
+    *> string "sender"
+    *> skip_while is_space
+    *> char ')'
+    *> return (receiver, sender, ip)
+
+  let bad_comment =
+    char '(' *> skip_while is_space *> Emile.Parser.domain >>= fun receiver ->
+    skip_while is_space
+    *> char ':'
+    *> skip_while is_space
+    *> string "domain"
+    *> skip_while is_space
+    *> string "of"
+    *> skip_while is_space
+    *> Emile.Parser.addr_spec
+    >>= fun sender ->
+    skip_while is_space
+    *> string "does"
+    *> skip_while is_space
+    *> string "not"
+    *> skip_while is_space
+    *> string "designate"
+    *> skip_while is_space
+    *> ipaddr
+    >>= fun ip ->
+    skip_while is_space
+    *> string "as"
+    *> skip_while is_space
+    *> string "permitted"
+    *> skip_while is_space
+    *> string "sender"
+    *> skip_while is_space
+    *> char ')'
+    *> return (receiver, sender, ip)
+
+  let comment = good_comment <|> bad_comment
+
+  let header_field =
+    skip_while is_space *> result >>= fun res ->
+    option None (skip_while is_space *> comment >>| Option.some)
+    >>= fun comment ->
+    option [] (skip_while is_space *> key_value_list) >>= fun kvs ->
+    return (res, comment, kvs)
+
+  let parse_received_spf_field_value unstrctrd =
+    let str = Unstrctrd.(to_utf_8_string (fold_fws unstrctrd)) in
+    match Angstrom.parse_string ~consume:Prefix header_field str with
+    | Ok v -> Ok v
+    | Error _ -> R.error_msgf "Invalid Received-SPF value: %S" str
+end
+
+type newline = LF | CRLF
+
+let sub_string_and_replace_newline chunk len =
+  let count = ref 0 in
+  String.iter
+    (function '\n' -> incr count | _ -> ())
+    (Bytes.sub_string chunk 0 len) ;
+  let plus = !count in
+  let pos = ref 0 in
+  let res = Bytes.create (len + plus) in
+  for i = 0 to len - 1 do
+    match Bytes.unsafe_get chunk i with
+    | '\n' ->
+        Bytes.unsafe_set res !pos '\r' ;
+        Bytes.unsafe_set res (!pos + 1) '\n' ;
+        pos := !pos + 2
+    | chr ->
+        Bytes.unsafe_set res !pos chr ;
+        incr pos
+  done ;
+  Bytes.unsafe_to_string res
+
+let sanitize_input newline chunk len =
+  match newline with
+  | CRLF -> Bytes.sub_string chunk 0 len
+  | LF -> sub_string_and_replace_newline chunk len
+
+[@@@warning "-30"]
+
+type extracted = { sender : Emile.mailbox option; received_spf : spf list }
+
+and spf = {
+  result :
+    [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ];
+  receiver : Emile.domain option;
+  sender : Emile.mailbox option;
+  ip : Ipaddr.t option;
+  ctx : ctx;
+}
+
+let to_unstrctrd unstructured =
+  let fold acc = function #Unstrctrd.elt as elt -> elt :: acc | _ -> acc in
+  let unstrctrd = List.fold_left fold [] unstructured in
+  R.get_ok (Unstrctrd.of_list (List.rev unstrctrd))
+
+let ctx_of_kvs kvs =
+  let identity =
+    match List.assoc_opt "identity" kvs with
+    | Some "mailfrom" -> Some `MAILFROM
+    | Some "helo" -> Some `HELO
+    | _ -> None in
+  let receiver =
+    Option.bind
+      (List.assoc_opt "receiver" kvs)
+      (R.to_option <.> Colombe.Domain.of_string) in
+  let fold ctx = function
+    | "client-ip", v -> (
+        match Ipaddr.of_string v with
+        | Ok (Ipaddr.V4 _ as v) ->
+            Map.add Map.K.ip v (Map.add Map.K.v `In_addr ctx)
+        | Ok (Ipaddr.V6 _ as v) -> Map.add Map.K.ip v (Map.add Map.K.v `Ip6 ctx)
+        | _ -> ctx)
+    | "helo", v -> (
+        match (Colombe.Domain.of_string v, Domain_name.of_string v) with
+        | Ok v0, Ok v1 -> Map.add Map.K.helo v0 (Map.add Map.K.domain v1 ctx)
+        | Ok v, Error _ -> Map.add Map.K.helo v ctx
+        | Error _, Ok v -> Map.add Map.K.domain v ctx
+        | _ -> ctx)
+    | "envelope-from", v -> (
+        match (Colombe.Path.of_string (Fmt.str "<%s>" v), identity) with
+        | Ok { Colombe.Path.local; domain; _ }, Some `HELO ->
+            let ctx = Map.add Map.K.local local ctx in
+            let ctx = Map.add Map.K.domain_of_sender domain ctx in
+            let ctx =
+              match (domain, Map.find Map.K.domain ctx) with
+              | Colombe.Domain.Domain vs, None ->
+                  let v = Domain_name.of_strings_exn vs in
+                  Map.add Map.K.sender (`HELO v) ctx |> Map.add Map.K.domain v
+              | Colombe.Domain.Domain vs, Some _ ->
+                  let v = Domain_name.of_strings_exn vs in
+                  Map.add Map.K.sender (`HELO v) ctx
+              | _ -> ctx in
+            ctx
+        | Ok ({ Colombe.Path.local; domain; _ } as v), (Some `MAILFROM | None)
+          ->
+            let ctx = Map.add Map.K.sender (`MAILFROM v) ctx in
+            let ctx = Map.add Map.K.local local ctx in
+            let ctx = Map.add Map.K.domain_of_sender domain ctx in
+            let ctx =
+              match (domain, Map.find Map.K.domain ctx) with
+              | Colombe.Domain.Domain vs, None ->
+                  Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx
+              | _ -> ctx in
+            ctx
+        | Error _, _ -> ctx)
+    | _ -> ctx in
+  (identity, receiver, List.fold_left fold Map.empty kvs)
+
+let colombe_domain_to_emile_domain = function
+  | Colombe.Domain.IPv4 v -> `Addr (Emile.IPv4 v)
+  | Colombe.Domain.IPv6 v -> `Addr (Emile.IPv6 v)
+  | Colombe.Domain.Domain vs -> `Domain vs
+  | Colombe.Domain.Extension (k, v) -> `Addr (Emile.Ext (k, v))
+
+let to_mailbox { Colombe.Path.local; domain; _ } =
+  let local =
+    match local with
+    | `Dot_string vs -> List.map (fun v -> `Atom v) vs
+    | `String v -> [ `String v ] in
+  let domain = colombe_domain_to_emile_domain domain in
+  { Emile.local; domain = (domain, []); name = None }
+
+let to_spf = function
+  | result, Some ((receiver' : Emile.domain), sender', ip'), kvs ->
+      let p' = R.get_ok (Colombe_emile.to_path sender') in
+      let identity, receiver, ctx = ctx_of_kvs kvs in
+      let receiver =
+        Option.value ~default:receiver'
+          (Option.map colombe_domain_to_emile_domain receiver) in
+      let ctx, ip =
+        match Map.find Map.K.ip ctx with
+        | Some ip -> (ctx, ip)
+        | None -> (Map.add Map.K.ip ip' ctx, ip') in
+      let ctx, sender =
+        match (Map.find Map.K.sender ctx, identity) with
+        | Some (`HELO _), Some `MAILFROM ->
+            assert false (* XXX(dinosaure): I'm correct? *)
+        | Some (`HELO _), (Some `HELO | None) -> (ctx, to_mailbox p')
+        | Some (`MAILFROM p), _ -> (ctx, to_mailbox p)
+        | None, (Some `MAILFROM | None) ->
+            let { Colombe.Path.local; domain; _ } = p' in
+            let ctx = Map.add Map.K.sender (`MAILFROM p') ctx in
+            let ctx = Map.add Map.K.local local ctx in
+            let ctx = Map.add Map.K.domain_of_sender domain ctx in
+            let ctx =
+              match (domain, Map.find Map.K.domain ctx) with
+              | Colombe.Domain.Domain vs, None ->
+                  Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx
+              | _ -> ctx in
+            (ctx, to_mailbox p')
+        | None, Some `HELO ->
+            let { Colombe.Path.local; domain; _ } = p' in
+            let ctx = Map.add Map.K.local local ctx in
+            let ctx = Map.add Map.K.domain_of_sender domain ctx in
+            let ctx =
+              match (domain, Map.find Map.K.domain ctx) with
+              | Colombe.Domain.Domain vs, None ->
+                  let v = Domain_name.of_strings_exn vs in
+                  Map.add Map.K.sender (`HELO v) ctx |> Map.add Map.K.domain v
+              | Colombe.Domain.Domain vs, Some _ ->
+                  let v = Domain_name.of_strings_exn vs in
+                  Map.add Map.K.sender (`HELO v) ctx
+              | _ -> ctx in
+            (ctx, to_mailbox p') in
+      {
+        result;
+        receiver = Some receiver;
+        sender = Some sender;
+        ip = Some ip;
+        ctx;
+      }
+  | result, None, kvs ->
+      let identity, receiver, ctx = ctx_of_kvs kvs in
+      let receiver = Option.map colombe_domain_to_emile_domain receiver in
+      let sender =
+        match Map.find Map.K.sender ctx with
+        | Some (`MAILFROM p) -> Some (to_mailbox p)
+        | _ -> None in
+      let ip = Map.find Map.K.ip ctx in
+      { result; receiver; sender; ip; ctx }
+
+let p =
+  let open Mrmime in
+  let unstructured = Field.(Witness Unstructured) in
+  let open Field_name in
+  Map.empty
+  |> Map.add date unstructured
+  |> Map.add from unstructured
+  |> Map.add sender Field.(Witness Mailbox)
+  |> Map.add reply_to unstructured
+  |> Map.add (v "To") unstructured
+  |> Map.add cc unstructured
+  |> Map.add bcc unstructured
+  |> Map.add subject unstructured
+  |> Map.add message_id unstructured
+  |> Map.add comments unstructured
+  |> Map.add content_type unstructured
+  |> Map.add content_encoding unstructured
+
+let extract_received_spf :
+    type flow t.
+    ?newline:newline ->
+    flow ->
+    t state ->
+    (module FLOW with type flow = flow and type backend = t) ->
+    ((extracted, [> `Msg of string ]) result, t) io =
+ fun ?(newline = LF) flow { bind; return } (module Flow) ->
+  let open Mrmime in
+  let ( >>= ) = bind in
+  let chunk = 0x1000 in
+  let raw = Bytes.create chunk in
+  let decoder = Hd.decoder p in
+  let rec go (sender : Emile.mailbox option) acc =
+    match Hd.decode decoder with
+    | `Field field -> (
+        let (Field.Field (field_name, w, v)) = Location.prj field in
+        match
+          ( Field_name.equal field_name received_spf,
+            Field_name.equal field_name Field_name.sender,
+            w )
+        with
+        | true, _, Field.Unstructured -> (
+            let v = to_unstrctrd v in
+            match Decoder.parse_received_spf_field_value v with
+            | Ok v -> go sender (to_spf v :: acc)
+            | Error (`Msg err) ->
+                Log.warn (fun m -> m "Ignore Received-SPF value: %s." err) ;
+                go sender acc)
+        | _, true, Field.Mailbox -> go (Some v) acc
+        | _ -> go sender acc)
+    | `Malformed _err ->
+        Log.err (fun m -> m "The given email is malformed.") ;
+        return (R.error_msg "Invalid email")
+    | `End _rest -> return (Ok { sender; received_spf = List.rev acc })
+    | `Await ->
+        Flow.input flow raw 0 (Bytes.length raw) >>= fun len ->
+        let raw = sanitize_input newline raw len in
+        Hd.src decoder raw 0 (String.length raw) ;
+        go sender acc in
+  go None []
