@@ -171,10 +171,14 @@ val check :
   [ res | `Record of record ] ->
   (res, 't) io
 
-val to_field :
-  ctx:ctx -> ?receiver:Emile.domain -> res -> Mrmime.Field_name.t * Unstrctrd.t
-
 type newline = LF | CRLF
+
+val to_field :
+  ctx:ctx ->
+  ?newline:newline ->
+  ?receiver:Emile.domain ->
+  res ->
+  Mrmime.Field_name.t * Unstrctrd.t
 
 type extracted = spf list
 

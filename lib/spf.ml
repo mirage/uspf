@@ -1088,13 +1088,17 @@ end
 
 let received_spf = Mrmime.Field_name.v "Received-SPF"
 
+type newline = LF | CRLF
+
 let to_field :
     ctx:ctx ->
+    ?newline:newline ->
     ?receiver:Emile.domain ->
     res ->
     Mrmime.Field_name.t * Unstrctrd.t =
- fun ~ctx ?receiver res ->
-  let v = Prettym.to_string (Encoder.field ~ctx ?receiver) res in
+ fun ~ctx ?(newline = LF) ?receiver res ->
+  let new_line = match newline with LF -> "\n" | CRLF -> "\r\n" in
+  let v = Prettym.to_string ~new_line (Encoder.field ~ctx ?receiver) res in
   let _, v =
     match Unstrctrd.of_string v with Ok v -> v | Error _ -> assert false in
   (received_spf, v)
@@ -1240,8 +1244,6 @@ module Decoder = struct
     | Ok v -> Ok v
     | Error _ -> R.error_msgf "Invalid Received-SPF value: %S" str
 end
-
-type newline = LF | CRLF
 
 let sub_string_and_replace_newline chunk len =
   let count = ref 0 in
