@@ -39,7 +39,7 @@
 
     {[
       let res =
-        Spf.record ctx sched dns (module DNS)
+        Spf.get ctx sched dns (module DNS)
         >>= Spf.check ctx sched dns (module DNS)
     ]}
 
@@ -115,6 +115,34 @@ type record
 
 type mechanism
 
+val a : ?cidr_v4:int -> ?cidr_v6:int -> [ `raw ] Domain_name.t -> mechanism
+
+val all : mechanism
+
+val exists : [ `raw ] Domain_name.t -> mechanism
+
+val inc : [ `raw ] Domain_name.t -> mechanism
+
+val mx : ?cidr_v4:int -> ?cidr_v6:int -> [ `raw ] Domain_name.t -> mechanism
+
+val v4 : Ipaddr.V4.Prefix.t -> mechanism
+
+val v6 : Ipaddr.V6.Prefix.t -> mechanism
+
+type modifier
+
+type quantifier = Pass | Fail | Softfail | Neutral
+
+val pass : mechanism -> quantifier * mechanism
+
+val fail : mechanism -> quantifier * mechanism
+
+val softfail : mechanism -> quantifier * mechanism
+
+val neutral : mechanism -> quantifier * mechanism
+
+val record : (quantifier * mechanism) list -> modifier list -> record
+
 type res =
   [ `None
   | `Neutral
@@ -128,7 +156,7 @@ val pp : record Fmt.t
 
 val pp_res : res Fmt.t
 
-val record :
+val get :
   ctx:ctx ->
   't state ->
   'dns ->

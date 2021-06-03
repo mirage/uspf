@@ -34,7 +34,7 @@ end
 
 let check ?nameserver ~timeout ctx =
   let dns = Dns_client_unix.create ?nameserver ~timeout () in
-  Spf.record ~ctx state dns (module DNS) |> Unix_scheduler.prj >>| fun record ->
+  Spf.get ~ctx state dns (module DNS) |> Unix_scheduler.prj >>| fun record ->
   Spf.check ~ctx state dns (module DNS) record |> Unix_scheduler.prj
 
 let extract_received_spf ?newline ic =

@@ -32,6 +32,11 @@ let with_sender sender ctx =
             (* XXX(dinosaure): assume that an [HELO] should be already done with
              * the same domain-name. *)
             Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx
+        | Colombe.Domain.Domain vs, Some vs' ->
+            let vs = Domain_name.of_strings_exn vs in
+            if not (Domain_name.equal vs vs')
+            then Map.add Map.K.domain vs ctx
+            else ctx
         | _ -> ctx in
       ctx
 
@@ -426,6 +431,20 @@ type mechanism =
   | V4 of Ipaddr.V4.Prefix.t
   | V6 of Ipaddr.V6.Prefix.t
 
+let a ?cidr_v4 ?cidr_v6 domain_name = A (Some domain_name, cidr_v4, cidr_v6)
+
+let all = All
+
+let exists domain_name = Exists domain_name
+
+let inc domain_name = Include domain_name
+
+let mx ?cidr_v4 ?cidr_v6 domain_name = Mx (Some domain_name, cidr_v4, cidr_v6)
+
+let v4 v = V4 v
+
+let v6 v = V6 v
+
 let pp_cidr ppf = function None -> () | Some v -> Fmt.pf ppf "/%d" v
 
 let pp_dual_cidr ppf = function
@@ -451,6 +470,14 @@ let pp_mechanism ppf = function
 
 type quantifier = Pass | Fail | Softfail | Neutral
 
+let pass m = (Pass, m)
+
+let fail m = (Fail, m)
+
+let softfail m = (Softfail, m)
+
+let neutral m = (Neutral, m)
+
 let pp_quantifier ppf = function
   | Pass -> ()
   | Fail -> Fmt.string ppf "-"
@@ -474,6 +501,9 @@ type record = {
   mechanisms : (quantifier * mechanism) list;
   modifiers : modifier Lazy.t list;
 }
+
+let record mechanisms modifiers =
+  { mechanisms; modifiers = List.map Lazy.from_val modifiers }
 
 let pp ppf { mechanisms; modifiers } =
   Fmt.pf ppf "%a"
@@ -573,7 +603,7 @@ let pp_res ppf = function
   | `Temperror -> Fmt.pf ppf "temperror"
   | `Permerror -> Fmt.pf ppf "permerror"
 
-let record :
+let get :
     type dns t.
     ctx:ctx ->
     t state ->
