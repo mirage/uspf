@@ -1069,8 +1069,6 @@ let to_field :
     match Unstrctrd.of_string v with Ok v -> v | Error _ -> assert false in
   (received_spf, v)
 
-[@@@warning "-27-32"]
-
 module Decoder = struct
   open Angstrom
 
@@ -1240,9 +1238,7 @@ let sanitize_input newline chunk len =
   | CRLF -> Bytes.sub_string chunk 0 len
   | LF -> sub_string_and_replace_newline chunk len
 
-[@@@warning "-30"]
-
-type extracted = { sender : Emile.mailbox option; received_spf : spf list }
+type extracted = spf list
 
 and spf = {
   result :
@@ -1375,7 +1371,7 @@ let to_spf = function
         ctx;
       }
   | result, None, kvs ->
-      let identity, receiver, ctx = ctx_of_kvs kvs in
+      let _identity, receiver, ctx = ctx_of_kvs kvs in
       let receiver = Option.map colombe_domain_to_emile_domain receiver in
       let sender =
         match Map.find Map.K.sender ctx with
@@ -1391,7 +1387,7 @@ let p =
   Map.empty
   |> Map.add date unstructured
   |> Map.add from unstructured
-  |> Map.add sender Field.(Witness Mailbox)
+  |> Map.add sender unstructured
   |> Map.add reply_to unstructured
   |> Map.add (v "To") unstructured
   |> Map.add cc unstructured
@@ -1415,31 +1411,26 @@ let extract_received_spf :
   let chunk = 0x1000 in
   let raw = Bytes.create chunk in
   let decoder = Hd.decoder p in
-  let rec go (sender : Emile.mailbox option) acc =
+  let rec go acc =
     match Hd.decode decoder with
     | `Field field -> (
         let (Field.Field (field_name, w, v)) = Location.prj field in
-        match
-          ( Field_name.equal field_name received_spf,
-            Field_name.equal field_name Field_name.sender,
-            w )
-        with
-        | true, _, Field.Unstructured -> (
+        match (Field_name.equal field_name received_spf, w) with
+        | true, Field.Unstructured -> (
             let v = to_unstrctrd v in
             match Decoder.parse_received_spf_field_value v with
-            | Ok v -> go sender (to_spf v :: acc)
+            | Ok v -> go (to_spf v :: acc)
             | Error (`Msg err) ->
                 Log.warn (fun m -> m "Ignore Received-SPF value: %s." err) ;
-                go sender acc)
-        | _, true, Field.Mailbox -> go (Some v) acc
-        | _ -> go sender acc)
+                go acc)
+        | _ -> go acc)
     | `Malformed _err ->
         Log.err (fun m -> m "The given email is malformed.") ;
         return (R.error_msg "Invalid email")
-    | `End _rest -> return (Ok { sender; received_spf = List.rev acc })
+    | `End _rest -> return (Ok (List.rev acc))
     | `Await ->
         Flow.input flow raw 0 (Bytes.length raw) >>= fun len ->
         let raw = sanitize_input newline raw len in
         Hd.src decoder raw 0 (String.length raw) ;
-        go sender acc in
-  go None []
+        go acc in
+  go []

@@ -73,8 +73,7 @@ let pp_result ppf = function
 
 let () =
   match Spf_unix.extract_received_spf stdin with
-  | Ok { sender; received_spf } ->
-      Fmt.pr "Sender: %a.\n%!" Fmt.(Dump.option Emile.pp_mailbox) sender ;
+  | Ok received_spf ->
       let check { Spf.result; receiver; sender; ip; ctx } =
         Fmt.pr "Expected result: %a.\n%!" pp_result result ;
         Fmt.pr "Receiver: %a.\n%!" Fmt.(Dump.option Emile.pp_domain) receiver ;

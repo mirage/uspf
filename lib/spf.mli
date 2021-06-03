@@ -1,4 +1,67 @@
-[@@@warning "-30"]
+(** {1 Sender Policy Framework.}
+
+    SPF is a framework to check the identity of the email's sender. When an
+    email passes through an SMTP server, some informations are available such as
+    the source of the email, the IP address (because the sender must initiate a
+    TCP/IP connexion).
+
+    From these informations and via SPF (and DNS records), we are able to
+    {i authorize} the given email or not. Indeed, the email submission process
+    requires an identity with the SMTP [MAILFROM] command. At this stage, we are
+    able to check if the domain name given by [MAILFROM] and the current IP
+    address of the sender match!
+
+    The domain-name used by [MAILFROM] should have some DNS records which
+    describe which IP address is allowed to send an email via the [MAILFROM]'s
+    identity. SPF will check that and it will try to find a {i match}. In any
+    results - if SPF fails or not - the SMTP server will put the result of such
+    check into the given email.
+
+    Finally, it permits to check, at any step of the submission, the identity of
+    the sender. However, it does not ensure a high level of securities when SPF
+    should be use with DKIM/DMARC to ensure some others aspects such as the
+    integrity of the given email.
+
+    {2 How to use SPF.}
+
+    SPF requires some {i meta} informations such as the [MAILFROM] identity and
+    the IP address of the sender. The user can create a {!ctx} and fill it with
+    these information:
+
+    {[
+      let ctx =
+        Spf.empty |> Spf.with_sender (`MAILFROM path) |> Spf.with_ip ipaddr
+    ]}
+
+    From this [ctx], then the user is able to {i check} the identity of the
+    sender via a DNS implementation. The user must get the SPF DNS record,
+    analyze it and use it then with the [ctx]:
+
+    {[
+      let res =
+        Spf.record ctx sched dns (module DNS)
+        >>= Spf.check ctx sched dns (module DNS)
+    ]}
+
+    From the result, the user is able to generate an {i header field}. It
+    optional to give your identity (your domain) to be exhaustive about {i meta}
+    information on the field value:
+
+    {[ let field_name, value = Spf.to_field ~ctx ?receiver res ]}
+
+    The value is well-formed for the incoming email. You just need to prepend
+    the field before the email.
+
+    {2 Reproductibility.}
+
+    The API provides a possibility to extract SPF results from an incoming email
+    and regenerate the [ctx] from them. By this way, locally, you can reproduce
+    the process above. By this way, you are able to reproduce the written result
+    and check if it still is valid.
+
+    Indeed, due to the DNS record requirement to check the identity of the
+    sender, it possible that {i meta} informations from the given email are
+    obsoletes (for any reasons). *)
 
 module Sigs = Sigs
 open Sigs
@@ -85,7 +148,7 @@ val to_field :
 
 type newline = LF | CRLF
 
-type extracted = { sender : Emile.mailbox option; received_spf : spf list }
+type extracted = spf list
 
 and spf = {
   result :
