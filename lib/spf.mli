@@ -175,7 +175,6 @@ type newline = LF | CRLF
 
 val to_field :
   ctx:ctx ->
-  ?newline:newline ->
   ?receiver:Emile.domain ->
   res ->
   Mrmime.Field_name.t * Unstrctrd.t

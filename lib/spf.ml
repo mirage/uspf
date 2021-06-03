@@ -1092,13 +1092,11 @@ type newline = LF | CRLF
 
 let to_field :
     ctx:ctx ->
-    ?newline:newline ->
     ?receiver:Emile.domain ->
     res ->
     Mrmime.Field_name.t * Unstrctrd.t =
- fun ~ctx ?(newline = LF) ?receiver res ->
-  let new_line = match newline with LF -> "\n" | CRLF -> "\r\n" in
-  let v = Prettym.to_string ~new_line (Encoder.field ~ctx ?receiver) res in
+ fun ~ctx ?receiver res ->
+  let v = Prettym.to_string (Encoder.field ~ctx ?receiver) res in
   let _, v =
     match Unstrctrd.of_string v with Ok v -> v | Error _ -> assert false in
   (received_spf, v)
