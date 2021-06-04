@@ -174,10 +174,7 @@ val check :
 type newline = LF | CRLF
 
 val to_field :
-  ctx:ctx ->
-  ?receiver:Emile.domain ->
-  res ->
-  Mrmime.Field_name.t * Unstrctrd.t
+  ctx:ctx -> ?receiver:Emile.domain -> res -> Mrmime.Field_name.t * Unstrctrd.t
 
 type extracted = spf list
 

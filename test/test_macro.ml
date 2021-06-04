@@ -104,4 +104,20 @@ let test02 =
     (Ok
        "1.0.b.c.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6._spf.example.com")
 
-let () = Alcotest.run "macro" [ ("simple", [ test01; test02 ]) ]
+let test03 =
+  Alcotest.test_case "record" `Quick @@ fun () ->
+  let record =
+    "v=spf1 ip4:184.104.202.128/27 ip4:184.104.202.96/27 ip4:216.218.159.0/27 \
+     ip4:216.218.240.64/26 ip4:64.71.168.192/26 ip4:65.19.128.64/26 \
+     ip4:66.220.12.128/27 ip4:72.52.80.0/26 ip4:64.62.250.96/27 \
+     ip6:2001:470:1:235::/64 ip6:2001:470:1:258::/64 ip6:2001:470:1:3a8::/64 \
+     ip6:2001:470:1:59e::/64 ip6:2001:470:1:669::/64 ip6:2001:470:1:791::/64 \
+     ip6:2001:470:1:9a5::/64 ip6:2001:470:1:9f1::/64 \
+     ip6:2602:fd3f:0000:ff06::/64 include:mailgun.org mx ptr ~all" in
+  match Spf.Term.parse_record record with
+  | Ok _ -> ()
+  | Error (`Msg err) -> Alcotest.failf "%s." err
+
+let () =
+  Alcotest.run "decoding"
+    [ ("macro", [ test01; test02 ]); ("record", [ test03 ]) ]
