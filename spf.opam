@@ -20,14 +20,17 @@ depends: [
   "rresult"
   "logs"
   "colombe"
+  "mrmime"
   "ipaddr"
   "hmap"
   "angstrom"
   "domain-name"
+  "dns"         {>= "5.0.1"}
   "dns-client"
   "alcotest" {with-test}
 ]
 
 pin-depends: [
   [ "colombe.dev" "git+https://github.com/mirage/colombe.git#a2c706f14e5b890d9b6e7b812163fd030bd4936d" ]
+  [ "mrmime.dev" "git+https://github.com/mirage/mrmime.git#39101eb0049ae4cf1db49ee2179cada74ca5bd6a" ]
 ]

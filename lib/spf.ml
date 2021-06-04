@@ -271,8 +271,9 @@ module Term = struct
 
   let ptr =
     string "ptr"
-    *> (skip_while is_sp *> char ':' *> skip_while is_sp *> Macro.domain_spec
-       >>| Option.some)
+    *> option None
+         (skip_while is_sp *> char ':' *> skip_while is_sp *> Macro.domain_spec
+         >>| Option.some)
     >>= fun macro -> return (`Ptr macro)
 
   let qnum =
@@ -890,8 +891,7 @@ and apply :
   | A (None, _, _) | Mx (None, _, _) -> return `Continue
   | Exists domain_name ->
       exists_mechanism ~ctx ~limit state dns (module DNS) q domain_name
-  | Ptr _ -> assert false
- (* TODO *)
+  | Ptr _ -> return `Continue (* See RFC 7802, Appendix B. *)
 
 and check :
     type t dns.
