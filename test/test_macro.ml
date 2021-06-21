@@ -118,6 +118,16 @@ let test03 =
   | Ok _ -> ()
   | Error (`Msg err) -> Alcotest.failf "%s." err
 
+let test04 =
+  Alcotest.test_case "record" `Quick @@ fun () ->
+  let ipv4_0 =
+    Spf.(pass @@ v4 (Ipaddr.V4.Prefix.of_string_exn "192.168.0.0/24")) in
+  let ipv4_1 = Spf.(pass @@ v4 (Ipaddr.V4.Prefix.of_string_exn "10.0.0.0/24")) in
+  let reject = Spf.(fail all) in
+  let record = Spf.record [ ipv4_0; ipv4_1; reject ] [] in
+  let str = Spf.record_to_string record in
+  Alcotest.(check string) "record" str "ip4:192.168.0.0/24 ip4:10.0.0.0/24 -all"
+
 let () =
   Alcotest.run "decoding"
-    [ ("macro", [ test01; test02 ]); ("record", [ test03 ]) ]
+    [ ("macro", [ test01; test02 ]); ("record", [ test03; test04 ]) ]

@@ -143,6 +143,8 @@ val neutral : mechanism -> quantifier * mechanism
 
 val record : (quantifier * mechanism) list -> modifier list -> record
 
+val record_to_string : record -> string
+
 type res =
   [ `None
   | `Neutral
