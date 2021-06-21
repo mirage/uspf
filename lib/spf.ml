@@ -2,6 +2,8 @@ module Sigs = Sigs
 open Rresult
 open Sigs
 
+let ( <.> ) f g x = f (g x)
+
 let src = Logs.Src.create "spf"
 
 module Log = (val Logs.src_log src : Logs.LOG)
@@ -503,6 +505,32 @@ type record = {
   modifiers : modifier Lazy.t list;
 }
 
+let concat sep lst =
+  let _, lst = List.partition (( = ) "") lst in
+  let len = List.fold_right (( + ) <.> String.length) lst 0 in
+  match lst with
+  | [] -> ""
+  | [ x ] -> x
+  | x :: r ->
+      let sep_len = String.length sep in
+      let res = Bytes.create (len + (List.length r * sep_len)) in
+      Bytes.blit_string x 0 res 0 (String.length x) ;
+      let pos = ref (String.length x) in
+      let blit x =
+        Bytes.blit_string sep 0 res !pos sep_len ;
+        Bytes.blit_string x 0 res (!pos + sep_len) (String.length x) ;
+        pos := !pos + sep_len + String.length x in
+      List.iter blit r ;
+      Bytes.unsafe_to_string res
+
+let record_to_string { mechanisms; modifiers } =
+  let mechanism_to_string (q, m) =
+    Fmt.strf "%a%a" pp_quantifier q pp_mechanism m in
+  let modifier_to_string m = Fmt.to_to_string pp_modifier m in
+  let mechanisms = List.map mechanism_to_string mechanisms in
+  let modifiers = List.map (modifier_to_string <.> Lazy.force) modifiers in
+  concat " " [ concat " " mechanisms; concat " " modifiers ]
+
 let record mechanisms modifiers =
   { mechanisms; modifiers = List.map Lazy.from_val modifiers }
 
@@ -515,8 +543,6 @@ let pp ppf { mechanisms; modifiers } =
   | _ :: _ ->
       let modifiers = List.map Lazy.force modifiers in
       Fmt.pf ppf " %a" Fmt.(list ~sep:(always " ") pp_modifier) modifiers
-
-let ( <.> ) f g x = f (g x)
 
 let fold ctx acc = function
   | `Directive (quantifier, `A (macro, (cidr_v4, cidr_v6))) ->
@@ -891,7 +917,8 @@ and apply :
   | A (None, _, _) | Mx (None, _, _) -> return `Continue
   | Exists domain_name ->
       exists_mechanism ~ctx ~limit state dns (module DNS) q domain_name
-  | Ptr _ -> return `Continue (* See RFC 7802, Appendix B. *)
+  | Ptr _ -> return `Continue
+ (* See RFC 7802, Appendix B. *)
 
 and check :
     type t dns.
