@@ -53,6 +53,24 @@ let with_ip ip ctx =
       let ctx = Map.add Map.K.ip ip ctx in
       ctx
 
+let colombe_domain_to_domain_name = function
+  | Colombe.Domain.Domain lst -> Domain_name.of_strings lst
+  | v -> R.error_msgf "Invalid domain-name: %a" Colombe.Domain.pp v
+
+let domain ctx =
+  match
+    ( Map.find Map.K.helo ctx,
+      Map.find Map.K.domain_of_sender ctx,
+      Map.find Map.K.domain ctx,
+      Map.find Map.K.sender ctx )
+  with
+  | _, _, Some v, _ | _, _, _, Some (`HELO v) -> Some v
+  | Some v, None, None, None
+  | _, Some v, None, None
+  | _, _, _, Some (`MAILFROM { Colombe.Path.domain = v; _ }) ->
+      R.to_option (colombe_domain_to_domain_name v)
+  | None, None, None, None -> None
+
 module Macro = struct
   open Angstrom
 
@@ -1113,7 +1131,7 @@ module Encoder = struct
       v v
 end
 
-let received_spf = Mrmime.Field_name.v "Received-SPF"
+let field_received_spf = Mrmime.Field_name.v "Received-SPF"
 
 type newline = LF | CRLF
 
@@ -1126,7 +1144,7 @@ let to_field :
   let v = Prettym.to_string (Encoder.field ~ctx ?receiver) res in
   let _, v =
     match Unstrctrd.of_string v with Ok v -> v | Error _ -> assert false in
-  (received_spf, v)
+  (field_received_spf, v)
 
 module Decoder = struct
   open Angstrom
@@ -1455,6 +1473,11 @@ let p =
   |> Map.add content_type unstructured
   |> Map.add content_encoding unstructured
 
+let parse_received_spf_field_value unstrctrd =
+  match Decoder.parse_received_spf_field_value unstrctrd with
+  | Ok v -> Ok (to_spf v)
+  | Error _ as err -> err
+
 let extract_received_spf :
     type flow t.
     ?newline:newline ->
@@ -1472,11 +1495,11 @@ let extract_received_spf :
     match Hd.decode decoder with
     | `Field field -> (
         let (Field.Field (field_name, w, v)) = Location.prj field in
-        match (Field_name.equal field_name received_spf, w) with
+        match (Field_name.equal field_name field_received_spf, w) with
         | true, Field.Unstructured -> (
             let v = to_unstrctrd v in
-            match Decoder.parse_received_spf_field_value v with
-            | Ok v -> go (to_spf v :: acc)
+            match parse_received_spf_field_value v with
+            | Ok v -> go (v :: acc)
             | Error (`Msg err) ->
                 Log.warn (fun m -> m "Ignore Received-SPF value: %s." err) ;
                 go acc)
