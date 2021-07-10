@@ -77,6 +77,8 @@ val with_sender :
 
 val with_ip : Ipaddr.t -> ctx -> ctx
 
+val domain : ctx -> [ `raw ] Domain_name.t option
+
 module Macro : sig
   type macro =
     [ `Literal of string
@@ -195,3 +197,10 @@ val extract_received_spf :
   't state ->
   (module Sigs.FLOW with type flow = 'flow and type backend = 't) ->
   ((extracted, [> `Msg of string ]) result, 't) io
+
+(** / *)
+
+val field_received_spf : Mrmime.Field_name.t
+
+val parse_received_spf_field_value :
+  Unstrctrd.t -> (spf, [> `Msg of string ]) result
