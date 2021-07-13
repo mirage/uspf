@@ -191,6 +191,8 @@ and spf = {
   ctx : ctx;
 }
 
+val pp_spf : spf Fmt.t
+
 val extract_received_spf :
   ?newline:newline ->
   'flow ->

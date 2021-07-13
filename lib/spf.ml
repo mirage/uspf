@@ -1324,6 +1324,27 @@ and spf = {
   ctx : ctx;
 }
 
+let pp_result ppf = function
+  | `None -> Fmt.string ppf "none"
+  | `Neutral -> Fmt.string ppf "neutral"
+  | `Pass -> Fmt.string ppf "pass"
+  | `Fail -> Fmt.string ppf "fail"
+  | `Softfail -> Fmt.string ppf "softfail"
+  | `Temperror -> Fmt.string ppf "temperror"
+  | `Permerror -> Fmt.string ppf "permerror"
+
+let pp_spf ppf spf =
+  Fmt.pf ppf
+    "{ @[<hov>result= %a;@ receiver= @[<hov>%a@];@ sender= @[<hov>%a@];@ ip= \
+     @[<hov>%a@];@ ctx= #ctx;@] }"
+    pp_result spf.result
+    Fmt.(Dump.option Emile.pp_domain)
+    spf.receiver
+    Fmt.(Dump.option Emile.pp_mailbox)
+    spf.sender
+    Fmt.(Dump.option Ipaddr.pp)
+    spf.ip
+
 let to_unstrctrd unstructured =
   let fold acc = function #Unstrctrd.elt as elt -> elt :: acc | _ -> acc in
   let unstrctrd = List.fold_left fold [] unstructured in
