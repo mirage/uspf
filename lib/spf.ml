@@ -722,7 +722,7 @@ let ipaddrs_of_mx :
   let ( >>= ) = bind in
   DNS.getrrecord dns Dns.Rr_map.A mail_exchange >>= function
   | Ok (_, v4s) ->
-      let v4s = Dns.Rr_map.Ipv4_set.elements v4s in
+      let v4s = Ipaddr.V4.Set.elements v4s in
       let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
       return (Ok (List.map (fun v -> Ipaddr.V4 v) v4s))
   | Error _ -> (
@@ -730,7 +730,7 @@ let ipaddrs_of_mx :
       DNS.getrrecord dns Dns.Rr_map.Aaaa mail_exchange
       >>= function
       | Ok (_, v6s) ->
-          let v6s = Dns.Rr_map.Ipv6_set.elements v6s in
+          let v6s = Ipaddr.V6.Set.elements v6s in
           let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
           return (Ok (List.map (fun v -> Ipaddr.V6 v) v6s))
       | Error (`Msg _) -> return (Error `Temperror)
@@ -812,7 +812,7 @@ let a_mechanism :
   let mechanism = A (Some domain_name, cidr_v4, cidr_v6) in
   DNS.getrrecord dns Dns.Rr_map.A domain_name >>= function
   | Ok (_, v4s) ->
-      let v4s = Dns.Rr_map.Ipv4_set.elements v4s in
+      let v4s = Ipaddr.V4.Set.elements v4s in
       let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
       let expected = Map.get Map.K.ip ctx in
       return
@@ -823,7 +823,7 @@ let a_mechanism :
   | Error _ -> (
       DNS.getrrecord dns Dns.Rr_map.Aaaa domain_name >>= function
       | Ok (_, v6s) ->
-          let v6s = Dns.Rr_map.Ipv6_set.elements v6s in
+          let v6s = Ipaddr.V6.Set.elements v6s in
           let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
           let expected = Map.get Map.K.ip ctx in
           return
