@@ -89,6 +89,10 @@ module Macro : sig
 
   type t = macro list * string option
 
+  val to_string : t -> string
+
+  val pp : t Fmt.t
+
   val expand_string :
     ctx -> string -> ([ `raw ] Domain_name.t, [> `Msg of string ]) result
 end
@@ -109,6 +113,12 @@ module Term : sig
     | `Redirect of Macro.t
     | `Unknown of string * Macro.macro list ]
     list
+
+  val to_string : t -> string
+
+  val pp : t Fmt.t
+
+  val equal : t -> t -> bool
 
   val parse_record : string -> (t, [> `Msg of string ]) result
 end
@@ -146,6 +156,10 @@ val neutral : mechanism -> quantifier * mechanism
 val record : (quantifier * mechanism) list -> modifier list -> record
 
 val record_to_string : record -> string
+
+val record_of_string : ctx:ctx -> string -> (record, [> `Msg of string ]) result
+
+val record_equal : record -> record -> bool
 
 type res =
   [ `None
@@ -201,6 +215,8 @@ val extract_received_spf :
   ((extracted, [> `Msg of string ]) result, 't) io
 
 (** / *)
+
+val select_spf1 : string list -> (string, [> `None ]) result
 
 val field_received_spf : Mrmime.Field_name.t
 
