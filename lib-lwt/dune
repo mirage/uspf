@@ -1,0 +1,4 @@
+(library
+ (name spf_lwt)
+ (public_name spf.lwt)
+ (libraries spf lwt))

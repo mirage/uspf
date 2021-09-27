@@ -153,6 +153,21 @@ module Macro = struct
 
   type t = macro list * string option
 
+  let pp ppf (ms, domain) =
+    let pp_macro ppf = function
+      | `Literal v -> Fmt.pf ppf "%s" v
+      | `Macro (letter, (transformers, true), delimiter) -> Fmt.pf ppf "%%{%c%ar%s}" letter Fmt.(option int) transformers delimiter
+      | `Macro (letter, (transformers, false), delimiter) -> Fmt.pf ppf "%%{%c%a%s}" letter Fmt.(option int) transformers delimiter
+      | `Macro_encoded_space -> Fmt.pf ppf "%%-"
+      | `Macro_space -> Fmt.pf ppf "%%_"
+      | `Macro_percent -> Fmt.pf ppf "%%%%" in
+    Fmt.pf ppf "%a" (Fmt.list ~sep:Fmt.nop pp_macro) ms ;
+    match domain with
+    | Some domain -> Fmt.pf ppf ".%s" domain
+    | None -> ()
+
+  let to_string = Fmt.to_to_string pp
+
   type key = Key : 'a Map.key -> key
 
   let key_of_letter = function
@@ -436,6 +451,44 @@ module Term = struct
     | `Unknown of string * Macro.macro list ]
     list
 
+  let pp ppf ts =
+    let pp_qualifier = Fmt.(option char) in
+    let pp_cidr ppf = function
+      | Some v4, Some v6 -> Fmt.pf ppf "/%d//%d" v4 v6
+      | Some v4, None -> Fmt.pf ppf "/%d" v4
+      | None, Some v6 -> Fmt.pf ppf "//%d" v6
+      | None, None -> () in
+    let pp ppf = function
+      | `Directive (qualifier, `A (Some macro, cidr)) ->
+        Fmt.pf ppf "%aa:%a%a" pp_qualifier qualifier Macro.pp macro pp_cidr cidr
+      | `Directive (qualifier, `A (None, cidr)) ->
+        Fmt.pf ppf "%aa%a" pp_qualifier qualifier pp_cidr cidr
+      | `Directive (qualifier, `All) -> Fmt.pf ppf "%aall" pp_qualifier qualifier
+      | `Directive (qualifier, `Exists v) ->
+        Fmt.pf ppf "%aexists:%a" pp_qualifier qualifier Macro.pp v
+      | `Directive (qualifier, `Include v) ->
+        Fmt.pf ppf "%ainclude:%a" pp_qualifier qualifier Macro.pp v
+      | `Directive (qualifier, `Mx (Some macro, cidr)) ->
+        Fmt.pf ppf "%amx:%a%a" pp_qualifier qualifier Macro.pp macro pp_cidr cidr
+      | `Directive (qualifier, `Mx (None, cidr)) ->
+        Fmt.pf ppf "%amx%a" pp_qualifier qualifier pp_cidr cidr
+      | `Directive (qualifier, `Ptr (Some macro)) ->
+        Fmt.pf ppf "%aptr:%a" pp_qualifier qualifier Macro.pp macro
+      | `Directive (qualifier, `Ptr None) ->
+        Fmt.pf ppf "%aptr" pp_qualifier qualifier
+      | `Directive (qualifier, `V4 v4) ->
+        Fmt.pf ppf "%aip4:%a" pp_qualifier qualifier Ipaddr.V4.Prefix.pp v4
+      | `Directive (qualifier, `V6 v6) ->
+        Fmt.pf ppf "%aip6:%a" pp_qualifier qualifier Ipaddr.V6.Prefix.pp v6
+      | `Explanation macro -> Fmt.pf ppf "exp=%a" Macro.pp macro
+      | `Redirect macro -> Fmt.pf ppf "redirect=%a" Macro.pp macro
+      | `Unknown (identifier, ms) -> Fmt.pf ppf "%s=%a" identifier Macro.pp (ms, None) in
+    Fmt.pf ppf "v=spf1 %a" Fmt.(list ~sep:(always " ") pp) ts
+
+  let to_string = Fmt.to_to_string pp
+
+  let equal = (=)
+
   let parse_record str =
     match Angstrom.parse_string ~consume:All record str with
     | Ok (v : t) -> Ok v
@@ -522,6 +575,13 @@ type record = {
   mechanisms : (quantifier * mechanism) list;
   modifiers : modifier Lazy.t list;
 }
+
+let record_equal : record -> record -> bool =
+ fun a b ->
+  (* TODO(dinosaure): replace [Stdlib.compare]. *)
+  let ma = List.sort Stdlib.compare a.mechanisms in
+  let mb = List.sort Stdlib.compare b.mechanisms in
+  try List.for_all2 ( = ) ma mb with _ -> false
 
 let concat sep lst =
   let _, lst = List.partition (( = ) "") lst in
@@ -623,6 +683,10 @@ let fold ctx acc = function
           @@ R.failwith_error_msg (Macro.expand_macro ctx macro)) in
       { acc with modifiers = modifier :: acc.modifiers }
   | `Unknown _ -> acc
+
+let record_of_string ~ctx str =
+  Term.parse_record str >>| fun terms ->
+  List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
 
 let rec select_spf1 = function
   | [] -> Error `None
