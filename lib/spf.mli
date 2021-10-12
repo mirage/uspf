@@ -25,8 +25,8 @@
     {2 How to use SPF.}
 
     SPF requires some {i meta} informations such as the [MAILFROM] identity and
-    the IP address of the sender. The user can create a {!ctx} and fill it with
-    these information:
+    the IP address of the sender. The user can create a {!type:ctx} and fill it
+    with these information:
 
     {[
       let ctx =
