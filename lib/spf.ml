@@ -156,15 +156,17 @@ module Macro = struct
   let pp ppf (ms, domain) =
     let pp_macro ppf = function
       | `Literal v -> Fmt.pf ppf "%s" v
-      | `Macro (letter, (transformers, true), delimiter) -> Fmt.pf ppf "%%{%c%ar%s}" letter Fmt.(option int) transformers delimiter
-      | `Macro (letter, (transformers, false), delimiter) -> Fmt.pf ppf "%%{%c%a%s}" letter Fmt.(option int) transformers delimiter
+      | `Macro (letter, (transformers, true), delimiter) ->
+          Fmt.pf ppf "%%{%c%ar%s}" letter
+            Fmt.(option int)
+            transformers delimiter
+      | `Macro (letter, (transformers, false), delimiter) ->
+          Fmt.pf ppf "%%{%c%a%s}" letter Fmt.(option int) transformers delimiter
       | `Macro_encoded_space -> Fmt.pf ppf "%%-"
       | `Macro_space -> Fmt.pf ppf "%%_"
       | `Macro_percent -> Fmt.pf ppf "%%%%" in
     Fmt.pf ppf "%a" (Fmt.list ~sep:Fmt.nop pp_macro) ms ;
-    match domain with
-    | Some domain -> Fmt.pf ppf ".%s" domain
-    | None -> ()
+    match domain with Some domain -> Fmt.pf ppf ".%s" domain | None -> ()
 
   let to_string = Fmt.to_to_string pp
 
@@ -366,7 +368,7 @@ module Term = struct
     option None ip4_cidr_length >>= fun cidr ->
     let str =
       Fmt.str "%s.%s.%s.%s%a" a b c d
-        Fmt.(option ~none:(const string "/32") (prefix (const string "/") int))
+        Fmt.(option ~none:(const string "/32") (const string "/" ++ int))
         cidr in
     return (`V4 (Ipaddr.V4.Prefix.of_string_exn str))
 
@@ -460,34 +462,38 @@ module Term = struct
       | None, None -> () in
     let pp ppf = function
       | `Directive (qualifier, `A (Some macro, cidr)) ->
-        Fmt.pf ppf "%aa:%a%a" pp_qualifier qualifier Macro.pp macro pp_cidr cidr
+          Fmt.pf ppf "%aa:%a%a" pp_qualifier qualifier Macro.pp macro pp_cidr
+            cidr
       | `Directive (qualifier, `A (None, cidr)) ->
-        Fmt.pf ppf "%aa%a" pp_qualifier qualifier pp_cidr cidr
-      | `Directive (qualifier, `All) -> Fmt.pf ppf "%aall" pp_qualifier qualifier
+          Fmt.pf ppf "%aa%a" pp_qualifier qualifier pp_cidr cidr
+      | `Directive (qualifier, `All) ->
+          Fmt.pf ppf "%aall" pp_qualifier qualifier
       | `Directive (qualifier, `Exists v) ->
-        Fmt.pf ppf "%aexists:%a" pp_qualifier qualifier Macro.pp v
+          Fmt.pf ppf "%aexists:%a" pp_qualifier qualifier Macro.pp v
       | `Directive (qualifier, `Include v) ->
-        Fmt.pf ppf "%ainclude:%a" pp_qualifier qualifier Macro.pp v
+          Fmt.pf ppf "%ainclude:%a" pp_qualifier qualifier Macro.pp v
       | `Directive (qualifier, `Mx (Some macro, cidr)) ->
-        Fmt.pf ppf "%amx:%a%a" pp_qualifier qualifier Macro.pp macro pp_cidr cidr
+          Fmt.pf ppf "%amx:%a%a" pp_qualifier qualifier Macro.pp macro pp_cidr
+            cidr
       | `Directive (qualifier, `Mx (None, cidr)) ->
-        Fmt.pf ppf "%amx%a" pp_qualifier qualifier pp_cidr cidr
+          Fmt.pf ppf "%amx%a" pp_qualifier qualifier pp_cidr cidr
       | `Directive (qualifier, `Ptr (Some macro)) ->
-        Fmt.pf ppf "%aptr:%a" pp_qualifier qualifier Macro.pp macro
+          Fmt.pf ppf "%aptr:%a" pp_qualifier qualifier Macro.pp macro
       | `Directive (qualifier, `Ptr None) ->
-        Fmt.pf ppf "%aptr" pp_qualifier qualifier
+          Fmt.pf ppf "%aptr" pp_qualifier qualifier
       | `Directive (qualifier, `V4 v4) ->
-        Fmt.pf ppf "%aip4:%a" pp_qualifier qualifier Ipaddr.V4.Prefix.pp v4
+          Fmt.pf ppf "%aip4:%a" pp_qualifier qualifier Ipaddr.V4.Prefix.pp v4
       | `Directive (qualifier, `V6 v6) ->
-        Fmt.pf ppf "%aip6:%a" pp_qualifier qualifier Ipaddr.V6.Prefix.pp v6
+          Fmt.pf ppf "%aip6:%a" pp_qualifier qualifier Ipaddr.V6.Prefix.pp v6
       | `Explanation macro -> Fmt.pf ppf "exp=%a" Macro.pp macro
       | `Redirect macro -> Fmt.pf ppf "redirect=%a" Macro.pp macro
-      | `Unknown (identifier, ms) -> Fmt.pf ppf "%s=%a" identifier Macro.pp (ms, None) in
-    Fmt.pf ppf "v=spf1 %a" Fmt.(list ~sep:(always " ") pp) ts
+      | `Unknown (identifier, ms) ->
+          Fmt.pf ppf "%s=%a" identifier Macro.pp (ms, None) in
+    Fmt.pf ppf "v=spf1 %a" Fmt.(list ~sep:(any " ") pp) ts
 
   let to_string = Fmt.to_to_string pp
 
-  let equal = (=)
+  let equal = ( = )
 
   let parse_record str =
     match Angstrom.parse_string ~consume:All record str with
@@ -603,7 +609,7 @@ let concat sep lst =
 
 let record_to_string { mechanisms; modifiers } =
   let mechanism_to_string (q, m) =
-    Fmt.strf "%a%a" pp_quantifier q pp_mechanism m in
+    Fmt.str "%a%a" pp_quantifier q pp_mechanism m in
   let modifier_to_string m = Fmt.to_to_string pp_modifier m in
   let mechanisms = List.map mechanism_to_string mechanisms in
   let modifiers = List.map (modifier_to_string <.> Lazy.force) modifiers in
@@ -614,13 +620,13 @@ let record mechanisms modifiers =
 
 let pp ppf { mechanisms; modifiers } =
   Fmt.pf ppf "%a"
-    Fmt.(list ~sep:(always " ") (pair ~sep:nop pp_quantifier pp_mechanism))
+    Fmt.(list ~sep:(any " ") (pair ~sep:nop pp_quantifier pp_mechanism))
     mechanisms ;
   match modifiers with
   | [] -> ()
   | _ :: _ ->
       let modifiers = List.map Lazy.force modifiers in
-      Fmt.pf ppf " %a" Fmt.(list ~sep:(always " ") pp_modifier) modifiers
+      Fmt.pf ppf " %a" Fmt.(list ~sep:(any " ") pp_modifier) modifiers
 
 let fold ctx acc = function
   | `Directive (quantifier, `A (macro, (cidr_v4, cidr_v6))) ->
@@ -1000,7 +1006,7 @@ and apply :
   | Exists domain_name ->
       exists_mechanism ~ctx ~limit state dns (module DNS) q domain_name
   | Ptr _ -> return `Continue
- (* See RFC 7802, Appendix B. *)
+(* See RFC 7802, Appendix B. *)
 
 and check :
     type t dns.

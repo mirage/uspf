@@ -26,6 +26,7 @@ depends: [
   "angstrom"
   "domain-name"
   "dns"         {>= "5.0.1"}
+  "lwt"
   "dns-client"
   "alcotest" {with-test}
 ]
