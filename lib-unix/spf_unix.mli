@@ -1,5 +1,5 @@
 val check :
-  ?nameserver:Dns.proto * (Ipaddr.t * int) ->
+  ?nameservers:Dns.proto * (Ipaddr.t * int) list ->
   timeout:int64 ->
   Spf.ctx ->
   (Spf.res, [> `Msg of string ]) result
