@@ -32,8 +32,8 @@ module Flow = struct
   let input ic tmp off len = Unix_scheduler.inj @@ input ic tmp off len
 end
 
-let check ?nameserver ~timeout ctx =
-  let dns = Dns_client_unix.create ?nameserver ~timeout () in
+let check ?nameservers ~timeout ctx =
+  let dns = Dns_client_unix.create ?nameservers ~timeout () in
   Spf.get ~ctx state dns (module DNS) |> Unix_scheduler.prj >>| fun record ->
   Spf.check ~ctx state dns (module DNS) record |> Unix_scheduler.prj
 
