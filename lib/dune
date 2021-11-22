@@ -2,6 +2,7 @@
  (name spf)
  (public_name spf)
  (libraries
+  astring
   rresult
   colombe.emile
   mrmime
