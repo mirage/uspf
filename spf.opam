@@ -20,20 +20,14 @@ depends: [
   "rresult"
   "logs"
   "colombe"
-  "mrmime"
+  "mrmime"      {>= "0.5.0"}
   "ipaddr"      {>= "5.2.0"}
   "hmap"
   "angstrom"
   "domain-name"
   "dns"         {>= "5.0.1"}
   "lwt"
-  "dns-client"
+  "dns-client"  {>= "6.1.0"}
+  "astring"
   "alcotest" {with-test}
-]
-
-pin-depends: [
-  [ "colombe.dev" "git+https://github.com/mirage/colombe.git#18b7b6940ac4ebce59def3c1107ede2cd21e6515" ]
-  [ "mrmime.dev" "git+https://github.com/mirage/mrmime.git#9784a03cdbbda61f250ec5c0a995ae9263fbcf4a" ]
-  [ "dns.dev" "git+https://github.com/mirage/ocaml-dns.git#1cc956368241beca6157eb4a3351174837e2bbd5" ]
-  [ "dns-client.dev" "git+https://github.com/mirage/ocaml-dns.git#1cc956368241beca6157eb4a3351174837e2bbd5" ]
 ]
