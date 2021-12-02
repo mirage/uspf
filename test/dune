@@ -1,6 +1,6 @@
 (executable
  (name test_macro)
- (libraries spf alcotest))
+ (libraries rresult uspf alcotest))
 
 (rule
  (alias runtest)

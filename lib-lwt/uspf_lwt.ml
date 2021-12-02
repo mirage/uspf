@@ -1,9 +1,9 @@
-module Lwt_scheduler = Spf.Sigs.Make (struct
+module Lwt_scheduler = Uspf.Sigs.Make (struct
   type 'a t = 'a Lwt.t
 end)
 
 let _state =
-  let open Spf.Sigs in
+  let open Uspf.Sigs in
   let open Lwt_scheduler in
   let open Lwt.Infix in
   {
@@ -35,8 +35,8 @@ let get :
   | Ok (_, txts) ->
   match
     R.(
-      Spf.select_spf1 (Dns.Rr_map.Txt_set.elements txts)
-      >>= Spf.Term.parse_record)
+      Uspf.select_spf1 (Dns.Rr_map.Txt_set.elements txts)
+      >>= Uspf.Term.parse_record)
   with
   | Ok terms -> Lwt.return_ok terms
   | Error `None -> Lwt.return_error `Not_found

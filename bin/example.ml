@@ -11,16 +11,16 @@ let receiver =
   `Domain vs
 
 let ctx0 =
-  Spf.empty
-  |> Spf.with_sender (`HELO github_com)
-  |> Spf.with_sender (`MAILFROM noreply_github_com)
-  |> Spf.with_ip (Ipaddr.of_string_exn "192.30.252.192")
+  Uspf.empty
+  |> Uspf.with_sender (`HELO github_com)
+  |> Uspf.with_sender (`MAILFROM noreply_github_com)
+  |> Uspf.with_ip (Ipaddr.of_string_exn "192.30.252.192")
 
 let ctx1 =
-  Spf.empty
-  |> Spf.with_sender (`HELO janestreet_com)
-  |> Spf.with_sender (`MAILFROM tbraibant)
-  |> Spf.with_ip (Ipaddr.of_string_exn "38.105.200.233")
+  Uspf.empty
+  |> Uspf.with_sender (`HELO janestreet_com)
+  |> Uspf.with_sender (`MAILFROM tbraibant)
+  |> Uspf.with_ip (Ipaddr.of_string_exn "38.105.200.233")
 
 let reporter ppf =
   let report src level ~over k msgf =
@@ -47,17 +47,17 @@ let () = Logs.set_reporter (reporter Fmt.stdout)
 let () = Logs.set_level ~all:true (Some Logs.Debug)
 
 let () =
-  match Spf_unix.check ~timeout:5_000_000_000L ctx0 with
+  match Uspf_unix.check ~timeout:5_000_000_000L ctx0 with
   | Ok res ->
-      let field_name, v = Spf.to_field ~ctx:ctx0 ~receiver res in
+      let field_name, v = Uspf.to_field ~ctx:ctx0 ~receiver res in
       Fmt.pr "%a: %s\n%!" Mrmime.Field_name.pp field_name
         (Unstrctrd.to_utf_8_string v)
   | Error (`Msg err) -> Fmt.epr "[ERR]: %s.\n%!" err
 
 let () =
-  match Spf_unix.check ~timeout:5_000_000_000L ctx1 with
+  match Uspf_unix.check ~timeout:5_000_000_000L ctx1 with
   | Ok res ->
-      let field_name, v = Spf.to_field ~ctx:ctx1 ~receiver res in
+      let field_name, v = Uspf.to_field ~ctx:ctx1 ~receiver res in
       Fmt.pr "%a: %s\n%!" Mrmime.Field_name.pp field_name
         (Unstrctrd.to_utf_8_string v)
   | Error (`Msg err) -> Fmt.epr "[ERR]: %s.\n%!" err
@@ -72,16 +72,16 @@ let pp_result ppf = function
   | `Permerror -> Fmt.string ppf "permerror"
 
 let () =
-  match Spf_unix.extract_received_spf stdin with
+  match Uspf_unix.extract_received_spf stdin with
   | Ok received_spf ->
-      let check { Spf.result; receiver; sender; ip; ctx } =
+      let check { Uspf.result; receiver; sender; ip; ctx } =
         Fmt.pr "Expected result: %a.\n%!" pp_result result ;
         Fmt.pr "Receiver: %a.\n%!" Fmt.(Dump.option Emile.pp_domain) receiver ;
         Fmt.pr "Sender: %a.\n%!" Fmt.(Dump.option Emile.pp_mailbox) sender ;
         Fmt.pr "IP: %a.\n%!" Fmt.(Dump.option Ipaddr.pp) ip ;
-        match Spf_unix.check ~timeout:5_000_000_000L ctx with
+        match Uspf_unix.check ~timeout:5_000_000_000L ctx with
         | Ok res ->
-            let field_name, v = Spf.to_field ~ctx ?receiver res in
+            let field_name, v = Uspf.to_field ~ctx ?receiver res in
             Fmt.pr "%a: %s\n%!" Mrmime.Field_name.pp field_name
               (Unstrctrd.to_utf_8_string v)
         | Error (`Msg err) -> Fmt.epr "[ERR]: %s.\n%!" err in

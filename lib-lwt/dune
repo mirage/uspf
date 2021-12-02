@@ -1,4 +1,4 @@
 (library
- (name spf_lwt)
- (public_name spf.lwt)
- (libraries spf lwt))
+ (name uspf_lwt)
+ (public_name uspf.lwt)
+ (libraries uspf lwt))
