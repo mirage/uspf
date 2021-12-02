@@ -1,11 +1,11 @@
-(** {1 Sender Policy Framework.}
+(** {1 (Un)Sender Policy Framework.}
 
-    SPF is a framework to check the identity of the email's sender. When an
+    uSPF is a framework to check the identity of the email's sender. When an
     email passes through an SMTP server, some informations are available such as
     the source of the email, the IP address (because the sender must initiate a
     TCP/IP connexion).
 
-    From these informations and via SPF (and DNS records), we are able to
+    From these informations and via uSPF (and DNS records), we are able to
     {i authorize} the given email or not. Indeed, the email submission process
     requires an identity with the SMTP [MAILFROM] command. At this stage, we are
     able to check if the domain name given by [MAILFROM] and the current IP
@@ -13,18 +13,18 @@
 
     The domain-name used by [MAILFROM] should have some DNS records which
     describe which IP address is allowed to send an email via the [MAILFROM]'s
-    identity. SPF will check that and it will try to find a {i match}. In any
-    results - if SPF fails or not - the SMTP server will put the result of such
+    identity. uSPF will check that and it will try to find a {i match}. In any
+    results - if uSPF fails or not - the SMTP server will put the result of such
     check into the given email.
 
     Finally, it permits to check, at any step of the submission, the identity of
-    the sender. However, it does not ensure a high level of securities when SPF
+    the sender. However, it does not ensure a high level of securities when uSPF
     should be use with DKIM/DMARC to ensure some others aspects such as the
     integrity of the given email.
 
-    {2 How to use SPF.}
+    {2 How to use uSPF.}
 
-    SPF requires some {i meta} informations such as the [MAILFROM] identity and
+    uSPF requires some {i meta} informations such as the [MAILFROM] identity and
     the IP address of the sender. The user can create a {!type:ctx} and fill it
     with these information:
 
@@ -61,23 +61,47 @@
 
     Indeed, due to the DNS record requirement to check the identity of the
     sender, it possible that {i meta} informations from the given email are
-    obsoletes (for any reasons). *)
+    obsoletes (for any reasons).
+
+    {2 As a server.}
+
+    uSPF allows the end-user to craft its own record and publish it then into
+    its primary/secondary DNS server. Multiple values exists such as:
+
+    - {!val:a}
+    - {!val:mx}
+    - {!val:all}
+    - {!val:pass}
+    - or {!val:fail}
+
+    They permits to describe {i via} OCaml the SPF record. It can be serialized
+    to a simple [string] then and the user can save it into its own
+    primary/secondary DNS server. *)
 
 module Sigs = Sigs
 open Sigs
 
 type ctx
+(** The type for contexts. It's a {i heterogeneous map} of values to help uSPF
+    to validate the sender. It requires the [MAILFROM] parameter given by the
+    SMTP protocol (which can be filled {i via} {!val:with_sender}) and/or the IP
+    address of the sender (which can be filled {i via} {!val:with_ip}). *)
 
 val empty : ctx
+(** [empty] is an empty context. *)
 
 val with_sender :
   [ `HELO of [ `raw ] Domain_name.t | `MAILFROM of Colombe.Path.t ] ->
   ctx ->
   ctx
+(** [with_sender v ctx] adds into the given [ctx] the sender of the incoming
+    email (its simple domain name or the complete email address). *)
 
 val with_ip : Ipaddr.t -> ctx -> ctx
+(** [with_ip v ctx] adds into the given [ctx] the IP address of the sender. *)
 
 val domain : ctx -> [ `raw ] Domain_name.t option
+(** [domain ctx] returns the domain-name of the sender if it exists. *)
 
 module Macro : sig
   type macro =
@@ -124,12 +148,35 @@ module Term : sig
 end
 
 type record
+(** The type of SPF records. *)
 
 type mechanism
+(** The type of mechanisms.
+
+    A mechanism permits to design and identify a set of IP addresses as being
+    permitted or not permitted to use the {!val:domain} for sending mail. *)
 
 val a : ?cidr_v4:int -> ?cidr_v6:int -> [ `raw ] Domain_name.t -> mechanism
+(** This mechanism matches if the sender's IP address is one of the
+    domain-name's IP addresses. For clarity, this means the [a] mechanism also
+    matches [AAAA] records.
+
+    An address lookup is done on the domain-name using the type of lookup (A or
+    AAAA) appropriate for the connection type. The IP is compared to the
+    returned address(es). If any address matches, the mechanism matches.
+
+    A {i Classless Inter-Domain Routing} can be applied to returned address(es)
+    (IPv4 or IPv6) to compare with the sender's IP address. For instance,
+    [a=10.0.0.42/32] matches only [10.0.0.42] as the sender's IP address but
+    [a=10.0.0.42/24] matches any [10.0.0.*] addresses. By default,
+    [cidr_v4 = 32] and [cidr_v6 = 128]. *)
 
 val all : mechanism
+(** The [all] mechanism is a test that always matches. It is used as the
+    rightmost mechanism (the last mechanism) in a record to provide an explicit
+    default. For example [v=spf1 a mx -all].
+
+    Mechanisms after [all] will never be tested. *)
 
 val exists : [ `raw ] Domain_name.t -> mechanism
 

@@ -14,4 +14,4 @@ val get :
   domain:_ Domain_name.t ->
   'dns ->
   (module DNS with type t = 'dns) ->
-  (Spf.Term.t, [> `Not_found | `Invalid_SPF_record ]) result Lwt.t
+  (Uspf.Term.t, [> `Not_found | `Invalid_SPF_record ]) result Lwt.t

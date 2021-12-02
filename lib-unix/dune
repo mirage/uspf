@@ -1,4 +1,4 @@
 (library
- (name spf_unix)
- (public_name spf.unix)
- (libraries unix dns-client.unix spf))
+ (name uspf_unix)
+ (public_name uspf.unix)
+ (libraries unix dns-client.unix uspf))

@@ -1,11 +1,11 @@
 open Rresult
 
-module Unix_scheduler = Spf.Sigs.Make (struct
+module Unix_scheduler = Uspf.Sigs.Make (struct
   type 'a t = 'a
 end)
 
 let state =
-  let open Spf.Sigs in
+  let open Uspf.Sigs in
   let open Unix_scheduler in
   { return = (fun x -> inj x); bind = (fun x f -> f (prj x)) }
 
@@ -34,8 +34,9 @@ end
 
 let check ?nameservers ~timeout ctx =
   let dns = Dns_client_unix.create ?nameservers ~timeout () in
-  Spf.get ~ctx state dns (module DNS) |> Unix_scheduler.prj >>| fun record ->
-  Spf.check ~ctx state dns (module DNS) record |> Unix_scheduler.prj
+  Uspf.get ~ctx state dns (module DNS) |> Unix_scheduler.prj >>| fun record ->
+  Uspf.check ~ctx state dns (module DNS) record |> Unix_scheduler.prj
 
 let extract_received_spf ?newline ic =
-  Spf.extract_received_spf ?newline ic state (module Flow) |> Unix_scheduler.prj
+  Uspf.extract_received_spf ?newline ic state (module Flow)
+  |> Unix_scheduler.prj

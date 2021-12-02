@@ -1,9 +1,8 @@
 (library
- (name spf)
- (public_name spf)
+ (name uspf)
+ (public_name uspf)
  (libraries
   astring
-  rresult
   colombe.emile
   mrmime
   dns
