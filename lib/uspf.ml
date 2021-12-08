@@ -518,6 +518,10 @@ let all = All
 let exists domain_name = Exists domain_name
 
 let inc domain_name = Include domain_name
+(* TODO(dinosaure): currently, [mechanism] is a **result** of the macro
+   expansion - the user can not specify by this way its own macro, he can
+   specify only a domain-name. We must provide something else than the
+   [mechanism] type which accepts macro. *)
 
 let mx ?cidr_v4 ?cidr_v6 domain_name = Mx (Some domain_name, cidr_v4, cidr_v6)
 
@@ -548,7 +552,7 @@ let pp_mechanism ppf = function
   | V4 ipv4 -> Fmt.pf ppf "ip4:%a" Ipaddr.V4.Prefix.pp ipv4
   | V6 ipv6 -> Fmt.pf ppf "ip6:%a" Ipaddr.V6.Prefix.pp ipv6
 
-type quantifier = Pass | Fail | Softfail | Neutral
+type qualifier = Pass | Fail | Softfail | Neutral
 
 let pass m = (Pass, m)
 
@@ -558,18 +562,18 @@ let softfail m = (Softfail, m)
 
 let neutral m = (Neutral, m)
 
-let pp_quantifier ppf = function
+let pp_qualifier ppf = function
   | Pass -> ()
   | Fail -> Fmt.string ppf "-"
   | Softfail -> Fmt.string ppf "~"
   | Neutral -> Fmt.string ppf "?"
 
-let quantifier_of_letter = function
+let qualifier_of_letter = function
   | Some '+' | None -> Pass
   | Some '-' -> Fail
   | Some '~' -> Softfail
   | Some '?' -> Neutral
-  | _ -> invalid_arg "quantifier_of_letter"
+  | _ -> invalid_arg "qualifier_of_letter"
 
 type modifier = Explanation of string | Redirect of string
 
@@ -578,7 +582,7 @@ let pp_modifier ppf = function
   | Redirect v -> Fmt.pf ppf "redirect=%s" v
 
 type record = {
-  mechanisms : (quantifier * mechanism) list;
+  mechanisms : (qualifier * mechanism) list;
   modifiers : modifier Lazy.t list;
 }
 
@@ -609,7 +613,7 @@ let concat sep lst =
 
 let record_to_string { mechanisms; modifiers } =
   let mechanism_to_string (q, m) =
-    Fmt.str "%a%a" pp_quantifier q pp_mechanism m in
+    Fmt.str "%a%a" pp_qualifier q pp_mechanism m in
   let modifier_to_string m = Fmt.to_to_string pp_modifier m in
   let mechanisms = List.map mechanism_to_string mechanisms in
   let modifiers = List.map (modifier_to_string <.> Lazy.force) modifiers in
@@ -620,7 +624,7 @@ let record mechanisms modifiers =
 
 let pp ppf { mechanisms; modifiers } =
   Fmt.pf ppf "%a"
-    Fmt.(list ~sep:(any " ") (pair ~sep:nop pp_quantifier pp_mechanism))
+    Fmt.(list ~sep:(any " ") (pair ~sep:nop pp_qualifier pp_mechanism))
     mechanisms ;
   match modifiers with
   | [] -> ()
@@ -629,51 +633,48 @@ let pp ppf { mechanisms; modifiers } =
       Fmt.pf ppf " %a" Fmt.(list ~sep:(any " ") pp_modifier) modifiers
 
 let fold ctx acc = function
-  | `Directive (quantifier, `A (macro, (cidr_v4, cidr_v6))) ->
+  | `Directive (qualifier, `A (macro, (cidr_v4, cidr_v6))) ->
       let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
       let mechanism =
-        (quantifier_of_letter quantifier, A (macro, cidr_v4, cidr_v6)) in
+        (qualifier_of_letter qualifier, A (macro, cidr_v4, cidr_v6)) in
       { acc with mechanisms = mechanism :: acc.mechanisms }
-  | `Directive (quantifier, `All) ->
+  | `Directive (qualifier, `All) ->
       {
         acc with
-        mechanisms = (quantifier_of_letter quantifier, All) :: acc.mechanisms;
+        mechanisms = (qualifier_of_letter qualifier, All) :: acc.mechanisms;
       }
-  | `Directive (quantifier, `Exists macro) -> (
-      let quantifier = quantifier_of_letter quantifier in
+  | `Directive (qualifier, `Exists macro) -> (
+      let qualifier = qualifier_of_letter qualifier in
       match Macro.expand_macro ctx macro with
       | Ok macro ->
-          { acc with mechanisms = (quantifier, Exists macro) :: acc.mechanisms }
+          { acc with mechanisms = (qualifier, Exists macro) :: acc.mechanisms }
       | Error _ -> acc
       (* TODO *))
-  | `Directive (quantifier, `Include macro) -> (
-      let quantifier = quantifier_of_letter quantifier in
+  | `Directive (qualifier, `Include macro) -> (
+      let qualifier = qualifier_of_letter qualifier in
       match Macro.expand_macro ctx macro with
       | Ok macro ->
-          {
-            acc with
-            mechanisms = (quantifier, Include macro) :: acc.mechanisms;
-          }
+          { acc with mechanisms = (qualifier, Include macro) :: acc.mechanisms }
       | Error _ -> acc
       (* TODO *))
-  | `Directive (quantifier, `Mx (macro, (cidr_v4, cidr_v6))) ->
+  | `Directive (qualifier, `Mx (macro, (cidr_v4, cidr_v6))) ->
       let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
       let mechanism =
-        (quantifier_of_letter quantifier, Mx (macro, cidr_v4, cidr_v6)) in
+        (qualifier_of_letter qualifier, Mx (macro, cidr_v4, cidr_v6)) in
       { acc with mechanisms = mechanism :: acc.mechanisms }
-  | `Directive (quantifier, `Ptr macro) ->
-      let quantifier = quantifier_of_letter quantifier in
+  | `Directive (qualifier, `Ptr macro) ->
+      let qualifier = qualifier_of_letter qualifier in
       let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
-      { acc with mechanisms = (quantifier, Ptr macro) :: acc.mechanisms }
-  | `Directive (quantifier, `V4 ipv4) ->
-      let quantifier = quantifier_of_letter quantifier in
-      { acc with mechanisms = (quantifier, V4 ipv4) :: acc.mechanisms }
-  | `Directive (quantifier, `V6 ipv6) ->
-      let quantifier = quantifier_of_letter quantifier in
-      { acc with mechanisms = (quantifier, V6 ipv6) :: acc.mechanisms }
+      { acc with mechanisms = (qualifier, Ptr macro) :: acc.mechanisms }
+  | `Directive (qualifier, `V4 ipv4) ->
+      let qualifier = qualifier_of_letter qualifier in
+      { acc with mechanisms = (qualifier, V4 ipv4) :: acc.mechanisms }
+  | `Directive (qualifier, `V6 ipv6) ->
+      let qualifier = qualifier_of_letter qualifier in
+      { acc with mechanisms = (qualifier, V6 ipv6) :: acc.mechanisms }
   | `Explanation macro ->
       let modifier =
         Lazy.from_fun @@ fun () ->
@@ -759,7 +760,7 @@ let get :
                    modifiers = List.rev record.modifiers;
                  })))
 
-let of_quantifier ~mechanism q match' =
+let of_qualifier ~mechanism q match' =
   match (q, match') with
   | Pass, true -> `Pass mechanism
   | Fail, true -> `Fail
@@ -813,7 +814,7 @@ let rec mx_mechanism :
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
-    quantifier ->
+    qualifier ->
     'a Domain_name.t ->
     int option * int option ->
     ([ `Continue | res ], t) io =
@@ -836,7 +837,7 @@ and go :
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
-    quantifier ->
+    qualifier ->
     Ipaddr.t ->
     Dns.Mx.t list ->
     [ `raw ] Domain_name.t ->
@@ -856,7 +857,7 @@ and go :
         | Error `Temperror -> return `Temperror
         | Ok vs ->
         match
-          of_quantifier ~mechanism q
+          of_qualifier ~mechanism q
             (List.exists (Ipaddr.Prefix.mem expected) vs)
         with
         | `Continue ->
@@ -872,7 +873,7 @@ let a_mechanism :
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
-    quantifier ->
+    qualifier ->
     'a Domain_name.t ->
     int option * int option ->
     ([ `Continue | res ], t) io =
@@ -886,7 +887,7 @@ let a_mechanism :
       let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
       let expected = Map.get Map.K.ip ctx in
       return
-        (of_quantifier ~mechanism q
+        (of_qualifier ~mechanism q
            (List.exists
               (Ipaddr.Prefix.mem expected)
               (List.map (fun v -> Ipaddr.V4 v) v4s)))
@@ -897,7 +898,7 @@ let a_mechanism :
           let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
           let expected = Map.get Map.K.ip ctx in
           return
-            (of_quantifier ~mechanism q
+            (of_qualifier ~mechanism q
                (List.exists
                   (Ipaddr.Prefix.mem expected)
                   (List.map (fun v -> Ipaddr.V6 v) v6s)))
@@ -911,17 +912,17 @@ let exists_mechanism :
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
-    quantifier ->
+    qualifier ->
     'a Domain_name.t ->
     ([ `Continue | res ], t) io =
  fun ~ctx:_ ~limit:_ { bind; return } dns (module DNS) q domain_name ->
   let ( >>= ) = bind in
   let mechanism = Exists domain_name in
   DNS.getrrecord dns Dns.Rr_map.A domain_name >>= function
-  | Ok _ -> return (of_quantifier ~mechanism q true)
+  | Ok _ -> return (of_qualifier ~mechanism q true)
   | Error _ -> (
       DNS.getrrecord dns Dns.Rr_map.Aaaa domain_name >>= function
-      | Ok _ -> return (of_quantifier ~mechanism q true)
+      | Ok _ -> return (of_qualifier ~mechanism q true)
       | Error (`Msg _) -> return `Temperror
       | Error (`No_domain _ | `No_data _) -> return `Continue)
 
@@ -932,7 +933,7 @@ let rec include_mechanism :
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
-    quantifier ->
+    qualifier ->
     'a Domain_name.t ->
     ([ `Continue | res ], t) io =
  fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) q domain_name ->
@@ -959,7 +960,7 @@ let rec include_mechanism :
       check ~ctx ~limit:(succ limit) state dns (module DNS) record >>= function
       | `Permerror | `None -> return `Permerror
       | `Temperror -> return `Temperror
-      | `Pass mechanism -> return (of_quantifier ~mechanism q true)
+      | `Pass mechanism -> return (of_qualifier ~mechanism q true)
       | `Fail | `Softfail | `Neutral -> return `Continue)
 
 and apply :
@@ -969,11 +970,11 @@ and apply :
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
-    quantifier * mechanism ->
+    qualifier * mechanism ->
     ([ `Continue | res ], t) io =
  fun ~ctx ~limit ({ return; _ } as state) dns (module DNS) (q, mechanism) ->
   match mechanism with
-  | All -> return (of_quantifier ~mechanism q true)
+  | All -> return (of_qualifier ~mechanism q true)
   | A (Some domain_name, cidr_ipv4, cidr_ipv6) ->
       Log.debug (fun m ->
           m "Apply A mechanism with %a." Domain_name.pp domain_name) ;
@@ -994,13 +995,13 @@ and apply :
       Log.debug (fun m ->
           m "Apply IPv4 mechanism with %a." Ipaddr.V4.Prefix.pp v4) ;
       return
-        (of_quantifier ~mechanism q
+        (of_qualifier ~mechanism q
            (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V4 v4)))
   | V6 v6 ->
       Log.debug (fun m ->
           m "Apply IPv6 mechanism with %a." Ipaddr.V6.Prefix.pp v6) ;
       return
-        (of_quantifier ~mechanism q
+        (of_qualifier ~mechanism q
            (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6)))
   | A (None, _, _) | Mx (None, _, _) -> return `Continue
   | Exists domain_name ->
@@ -1027,7 +1028,7 @@ and go :
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
-    (quantifier * mechanism) list ->
+    (qualifier * mechanism) list ->
     (res, t) io =
  fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) -> function
   | [] -> assert false (* TODO *)

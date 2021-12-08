@@ -179,32 +179,101 @@ val all : mechanism
     Mechanisms after [all] will never be tested. *)
 
 val exists : [ `raw ] Domain_name.t -> mechanism
+(** This mechanism is used to construct an arbitrary domain name that is used
+    for a DNS A record query. It allows for complicated schemes involving
+    arbitrary parts on the mail envelope to determine what is permitted. *)
 
 val inc : [ `raw ] Domain_name.t -> mechanism
+(** The [include] mechanism triggers a {i recursive} evaluation of {!val:check}:
+
+    + The macro is expanded according to the given {!val:ctx}
+    + We re-execute {!val:check} with the produced domain-name (IP and sender
+      arguments remain the same)
+    + The recursive evaluation returns {i match}, {i not-match} or an error.
+    + If it returns {i match}, then the appropriate result for the [include]
+      mechanism is used (see {!type:qualifier})
+    + It it returns {i not-match} or an error, the {!val:check} process tests
+      the next mechanism.
+
+    {b Note}: for instance, if the domain-name has [-all], [include] does not
+    strictly terminates the processus. It fails and let {!val:check} to process
+    the next mechanism. *)
 
 val mx : ?cidr_v4:int -> ?cidr_v6:int -> [ `raw ] Domain_name.t -> mechanism
+(** This mechanims matches if the sender's IP is one of the MX hosts for a
+    domain-name. A domain-name should have a MX record which is an IP address.
+    If this IP address is the same as the given IP address into the given
+    {!type:ctx}, we consider that the sender {i matches}.
+
+    {b Note}: if the domain-name has no MX record, {!val:check} does not apply
+    the implicit MX rules by querying for an A or AAAA record for the same name. *)
 
 val v4 : Ipaddr.V4.Prefix.t -> mechanism
+(** This mechanism test whether the given IP from the given {!type:ctx} is
+    contained within a given IPv4 network. *)
 
 val v6 : Ipaddr.V6.Prefix.t -> mechanism
+(** This mechanism test whether the given IP from the given {!type:ctx} is
+    contained within a given IPv: network. *)
 
 type modifier
+(** The type of modifiers.
 
-type quantifier = Pass | Fail | Softfail | Neutral
+    They are not available because they mostly provide additional information
+    which are not needed for {!val:check}. By this way, it's not needed to let
+    the user to define some when they are not effective on the user's sender
+    policy. *)
 
-val pass : mechanism -> quantifier * mechanism
+type qualifier =
+  | Pass
+  | Fail
+  | Softfail
+  | Neutral
+      (** The type of qualifiers.
 
-val fail : mechanism -> quantifier * mechanism
+          A qualifier specifies what the mechanism returns when it matches or
+          not:
 
-val softfail : mechanism -> quantifier * mechanism
+          - [+] returns [pass] if the mechanism matches
+          - [-] returns [fail] if the mechanism matches
+          - [~] returns [softfail] if the mechanism matches
+          - [?] returns [neutral] if the mechanism matches *)
 
-val neutral : mechanism -> quantifier * mechanism
+val pass : mechanism -> qualifier * mechanism
+(** [pass m] specifies the {!type:qualifier} of the given mechanism [m]. If the
+    mechanism {i matches} from the given {!type:ctx}, {!val:check} returns
+    [`Pass]. Otherwise, {!val:check} tries the next mechanism. *)
 
-val record : (quantifier * mechanism) list -> modifier list -> record
+val fail : mechanism -> qualifier * mechanism
+(** [fail m] specifies the {!type:qualifier} of the given mechanism [m]. If the
+    mechanism {i matches} from the given {!type:ctx}, {!val:check} tries the
+    next mechanism (as it considers the current one as a failure). If the
+    mechanism is the last one, {!val:check} returns [`Fail] so. *)
+
+val softfail : mechanism -> qualifier * mechanism
+(** [softfail m] specifies the {!type:qualifier} of the given mechanism [m]. If
+    the mechanism {i matches} from the given {!type:ctx}, {!val:check} tries the
+    next mechanism (as it considers the current one as a {i soft} failure). If
+    the mechanism is the last one, {!val:check} returns [`Softfail] so. *)
+
+val neutral : mechanism -> qualifier * mechanism
+(** [neutral m] specifies the {!type:qualifier} of the given mechanism [m].
+    Regardless the result of the mechanism (if it matches or not), {!val:check}
+    tries the next mechanism. If the mechanism is the last one, {!val:check}
+    returns [`Neutral] so. *)
+
+val record : (qualifier * mechanism) list -> modifier list -> record
+(** [record ms \[\]] returns a record which can be serialized into the zone file
+    of a specific domain-name as the sender policy. *)
 
 val record_to_string : record -> string
+(** [record_to_string v] returns the serialized version of the record to be able
+    to save it into the zone file of a domain-name as the sender policy. *)
 
 val record_of_string : ctx:ctx -> string -> (record, [> `Msg of string ]) result
+(** [record_of_string ~ctx str] tries to parse {b and} expand macro of the given
+    string which should come from the TXT record of a domain-name as the sender
+    policy of this domain-name. *)
 
 val record_equal : record -> record -> bool
 
@@ -227,6 +296,10 @@ val get :
   'dns ->
   (module DNS with type t = 'dns and type backend = 't) ->
   (([ res | `Record of record ], [> `Msg of string ]) result, 't) io
+(** [get ~ctx scheduler dns (module DNS)] tries to get the sender policy of the
+    domain-name given by [ctx]. It requires a [scheduler] which allows the
+    high-kind polymorphism over a monadic scheduler and a DNS implementation to
+    request the sender policy. *)
 
 val check :
   ctx:ctx ->
@@ -235,11 +308,16 @@ val check :
   (module DNS with type t = 'dns and type backend = 't) ->
   [ res | `Record of record ] ->
   (res, 't) io
+(** [check ~ctx scheduler dns (module DNS)] tries to check the sender policy
+    with the given [ctx]. It returns the result of this check. *)
 
 type newline = LF | CRLF
 
 val to_field :
   ctx:ctx -> ?receiver:Emile.domain -> res -> Mrmime.Field_name.t * Unstrctrd.t
+(** [to_field ~ctx ?received v] serializes as an email field the result of the
+    sender policy check according to the given [ctx]. The user is able to
+    prepend then its email with this field. *)
 
 type extracted = spf list
 
@@ -260,6 +338,8 @@ val extract_received_spf :
   't state ->
   (module Sigs.FLOW with type flow = 'flow and type backend = 't) ->
   ((extracted, [> `Msg of string ]) result, 't) io
+(** [extract_received_spf ?newline flow scheduler (module Flow)] tries to
+    recognized SPF fields values from the given email represented as a [flow]. *)
 
 (** / *)
 
