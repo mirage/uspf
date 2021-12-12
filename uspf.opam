@@ -18,16 +18,16 @@ depends: [
   "ocaml"       {>= "4.07.0"}
   "dune"        {>= "2.8.0"}
   "logs"
-  "colombe"
+  "colombe"     {>= "0.4.2"}
   "mrmime"      {>= "0.5.0"}
   "ipaddr"      {>= "5.2.0"}
   "hmap"
-  "angstrom"
+  "angstrom"    {>= "0.15.0"}
   "domain-name"
   "dns"         {>= "5.0.1"}
   "lwt"
   "dns-client"  {>= "6.1.0"}
   "astring"
   "alcotest"    {with-test}
-  "rresult"     {with-test}
+  "rresult"     {>= "0.7.0"}
 ]
