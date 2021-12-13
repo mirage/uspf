@@ -27,16 +27,15 @@ let get :
     type dns.
     domain:_ Domain_name.t -> dns -> (module DNS with type t = dns) -> _ =
  fun ~domain:domain_name dns (module DNS) ->
-  let open Rresult in
   let open Lwt.Infix in
   DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
   | Error (`Msg _) -> Lwt.return_error `Not_found
   | Error (`No_domain _ | `No_data _) -> Lwt.return_error `Not_found
   | Ok (_, txts) ->
   match
-    R.(
-      Uspf.select_spf1 (Dns.Rr_map.Txt_set.elements txts)
-      >>= Uspf.Term.parse_record)
+    let ( >>= ) x f = Result.bind x f in
+    Uspf.select_spf1 (Dns.Rr_map.Txt_set.elements txts)
+    >>= Uspf.Term.parse_record
   with
   | Ok terms -> Lwt.return_ok terms
   | Error `None -> Lwt.return_error `Not_found
