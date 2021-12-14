@@ -1,9 +1,11 @@
 module Sigs = Sigs
-open Rresult
 open Sigs
 
+let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
+let error_msg msg = Error (`Msg msg)
+let failwith_error_msg = function Ok v -> v | Error (`Msg err) -> failwith err
+let ( >>| ) x f = Result.map f x
 let ( <.> ) f g x = f (g x)
-
 let src = Logs.Src.create "spf"
 
 module Log = (val Logs.src_log src : Logs.LOG)
@@ -55,7 +57,7 @@ let with_ip ip ctx =
 
 let colombe_domain_to_domain_name = function
   | Colombe.Domain.Domain lst -> Domain_name.of_strings lst
-  | v -> R.error_msgf "Invalid domain-name: %a" Colombe.Domain.pp v
+  | v -> error_msgf "Invalid domain-name: %a" Colombe.Domain.pp v
 
 let domain ctx =
   match
@@ -68,18 +70,15 @@ let domain ctx =
   | Some v, None, None, None
   | _, Some v, None, None
   | _, _, _, Some (`MAILFROM { Colombe.Path.domain = v; _ }) ->
-      R.to_option (colombe_domain_to_domain_name v)
+      Result.to_option (colombe_domain_to_domain_name v)
   | None, None, None, None -> None
 
 module Macro = struct
   open Angstrom
 
   let is_alpha = function 'a' .. 'z' | 'A' .. 'Z' -> true | _ -> false
-
   let is_digit = function '0' .. '9' -> true | _ -> false
-
   let is_alphanum chr = is_alpha chr || is_digit chr
-
   let is_wsp = ( = ) ' '
 
   let toplabel =
@@ -141,7 +140,6 @@ module Macro = struct
     many (macro_string <|> (take_while1 is_wsp >>| fun wsp -> [ `Space wsp ]))
 
   let domain_end = char '.' *> toplabel <* option '.' (char '.')
-
   let domain_spec = both macro_string (option None (domain_end >>| Option.some))
 
   type macro =
@@ -223,16 +221,14 @@ module Macro = struct
   let expand_string hmp str =
     match Angstrom.parse_string ~consume:All domain_spec str with
     | Ok v -> expand_macro hmp v
-    | Error _ -> R.error_msgf "Invalid macro specification: %S" str
+    | Error _ -> error_msgf "Invalid macro specification: %S" str
 end
 
 module Term = struct
   open Angstrom
 
   let is_sp = ( = ) ' '
-
   let is_digit = function '0' .. '9' -> true | _ -> false
-
   let junk_with v = advance 1 *> return v
 
   let junk_only_if p =
@@ -434,7 +430,6 @@ module Term = struct
     mechanism >>= fun mechanism -> return (`Directive (qualifier, mechanism))
 
   let terms = many (take_while1 is_sp *> (directive <|> modifier))
-
   let record = string "v=spf1" *> terms <* skip_while is_sp
 
   type t =
@@ -492,13 +487,12 @@ module Term = struct
     Fmt.pf ppf "v=spf1 %a" Fmt.(list ~sep:(any " ") pp) ts
 
   let to_string = Fmt.to_to_string pp
-
   let equal = ( = )
 
   let parse_record str =
     match Angstrom.parse_string ~consume:All record str with
     | Ok (v : t) -> Ok v
-    | Error _ -> R.error_msgf "Invalid SPF record: %S" str
+    | Error _ -> error_msgf "Invalid SPF record: %S" str
 end
 
 type mechanism =
@@ -512,11 +506,8 @@ type mechanism =
   | V6 of Ipaddr.V6.Prefix.t
 
 let a ?cidr_v4 ?cidr_v6 domain_name = A (Some domain_name, cidr_v4, cidr_v6)
-
 let all = All
-
 let exists domain_name = Exists domain_name
-
 let inc domain_name = Include domain_name
 (* TODO(dinosaure): currently, [mechanism] is a **result** of the macro
    expansion - the user can not specify by this way its own macro, he can
@@ -524,11 +515,8 @@ let inc domain_name = Include domain_name
    [mechanism] type which accepts macro. *)
 
 let mx ?cidr_v4 ?cidr_v6 domain_name = Mx (Some domain_name, cidr_v4, cidr_v6)
-
 let v4 v = V4 v
-
 let v6 v = V6 v
-
 let pp_cidr ppf = function None -> () | Some v -> Fmt.pf ppf "/%d" v
 
 let pp_dual_cidr ppf = function
@@ -555,11 +543,8 @@ let pp_mechanism ppf = function
 type qualifier = Pass | Fail | Softfail | Neutral
 
 let pass m = (Pass, m)
-
 let fail m = (Fail, m)
-
 let softfail m = (Softfail, m)
-
 let neutral m = (Neutral, m)
 
 let pp_qualifier ppf = function
@@ -634,7 +619,8 @@ let pp ppf { mechanisms; modifiers } =
 
 let fold ctx acc = function
   | `Directive (qualifier, `A (macro, (cidr_v4, cidr_v6))) ->
-      let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
+      let macro =
+        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
       let mechanism =
         (qualifier_of_letter qualifier, A (macro, cidr_v4, cidr_v6)) in
@@ -659,14 +645,16 @@ let fold ctx acc = function
       | Error _ -> acc
       (* TODO *))
   | `Directive (qualifier, `Mx (macro, (cidr_v4, cidr_v6))) ->
-      let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
+      let macro =
+        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
       let mechanism =
         (qualifier_of_letter qualifier, Mx (macro, cidr_v4, cidr_v6)) in
       { acc with mechanisms = mechanism :: acc.mechanisms }
   | `Directive (qualifier, `Ptr macro) ->
       let qualifier = qualifier_of_letter qualifier in
-      let macro = Option.map (R.to_option <.> Macro.expand_macro ctx) macro in
+      let macro =
+        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
       let macro = Option.join macro in
       { acc with mechanisms = (qualifier, Ptr macro) :: acc.mechanisms }
   | `Directive (qualifier, `V4 ipv4) ->
@@ -680,14 +668,14 @@ let fold ctx acc = function
         Lazy.from_fun @@ fun () ->
         Explanation
           (Domain_name.to_string
-          @@ R.failwith_error_msg (Macro.expand_macro ctx macro)) in
+          @@ failwith_error_msg (Macro.expand_macro ctx macro)) in
       { acc with modifiers = modifier :: acc.modifiers }
   | `Redirect macro ->
       let modifier =
         Lazy.from_fun @@ fun () ->
         Redirect
           (Domain_name.to_string
-          @@ R.failwith_error_msg (Macro.expand_macro ctx macro)) in
+          @@ failwith_error_msg (Macro.expand_macro ctx macro)) in
       { acc with modifiers = modifier :: acc.modifiers }
   | `Unknown _ -> acc
 
@@ -698,7 +686,7 @@ let record_of_string ~ctx str =
 let rec select_spf1 = function
   | [] -> Error `None
   | x :: r when String.length x >= 6 ->
-      if String.sub x 0 6 = "v=spf1" then R.ok x else select_spf1 r
+      if String.sub x 0 6 = "v=spf1" then Ok x else select_spf1 r
   | _ :: r -> select_spf1 r
 
 type res =
@@ -729,7 +717,7 @@ let get :
  fun ~ctx { bind; return } dns (module DNS) ->
   let ( >>= ) = bind in
   match Map.find Map.K.domain ctx with
-  | None -> return (R.error_msgf "Missing domain-name into the given context")
+  | None -> return (error_msgf "Missing domain-name into the given context")
   | Some domain_name -> (
       DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
       | Error (`No_domain _ | `No_data _) -> return (Ok `None)
@@ -738,7 +726,8 @@ let get :
           return (Ok `Temperror)
       | Ok (_, txts) ->
       match
-        R.(select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record)
+        let ( >>= ) x f = Result.bind x f in
+        select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
       with
       | Error `None -> return (Ok `None) (* XXX(dinosaure): see RFC 7208, 4.5 *)
       | Error (`Msg err) ->
@@ -753,7 +742,7 @@ let get :
             List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
           in
           return
-            (R.ok
+            (Ok
                (`Record
                  {
                    mechanisms = List.rev record.mechanisms;
@@ -944,7 +933,8 @@ let rec include_mechanism :
   | Error (`No_domain _ | `No_data _) -> return `Permerror
   | Ok (_, txts) ->
   match
-    R.(select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record)
+    let ( >>= ) x f = Result.bind x f in
+    select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
   with
   | Error `None | Error (`Msg _) -> return `Permerror
   | Ok terms -> (
@@ -1221,7 +1211,6 @@ module Decoder = struct
   open Angstrom
 
   let is_alpha = function 'A' .. 'Z' | 'a' .. 'z' -> true | _ -> false
-
   let is_space = ( = ) ' '
 
   let result =
@@ -1261,7 +1250,6 @@ module Decoder = struct
    * and they are implemented by [emile]/[mrmime]. We took them in this case. *)
 
   let dot_atom = Emile.Parser.dot_atom >>| String.concat "."
-
   let quoted_string = Emile.Parser.quoted_string
 
   let key_value_pair =
@@ -1356,7 +1344,7 @@ module Decoder = struct
     let str = Unstrctrd.(to_utf_8_string (fold_fws unstrctrd)) in
     match Angstrom.parse_string ~consume:Prefix header_field str with
     | Ok v -> Ok v
-    | Error _ -> R.error_msgf "Invalid Received-SPF value: %S" str
+    | Error _ -> error_msgf "Invalid Received-SPF value: %S" str
 end
 
 let sub_string_and_replace_newline chunk len =
@@ -1419,7 +1407,9 @@ let pp_spf ppf spf =
 let to_unstrctrd unstructured =
   let fold acc = function #Unstrctrd.elt as elt -> elt :: acc | _ -> acc in
   let unstrctrd = List.fold_left fold [] unstructured in
-  R.get_ok (Unstrctrd.of_list (List.rev unstrctrd))
+  match Unstrctrd.of_list (List.rev unstrctrd) with
+  | Ok v -> v
+  | _ -> assert false
 
 let ctx_of_kvs kvs =
   let identity =
@@ -1430,7 +1420,7 @@ let ctx_of_kvs kvs =
   let receiver =
     Option.bind
       (List.assoc_opt "receiver" kvs)
-      (R.to_option <.> Colombe.Domain.of_string) in
+      (Result.to_option <.> Colombe.Domain.of_string) in
   let fold ctx = function
     | "client-ip", v -> (
         match Ipaddr.of_string v with
@@ -1490,7 +1480,7 @@ let to_mailbox { Colombe.Path.local; domain; _ } =
 
 let to_spf = function
   | result, Some ((receiver' : Emile.domain), sender', ip'), kvs ->
-      let p' = R.get_ok (Colombe_emile.to_path sender') in
+      let p' = failwith_error_msg (Colombe_emile.to_path sender') in
       let identity, receiver, ctx = ctx_of_kvs kvs in
       let receiver =
         Option.value ~default:receiver'
@@ -1598,7 +1588,7 @@ let extract_received_spf :
         | _ -> go acc)
     | `Malformed _err ->
         Log.err (fun m -> m "The given email is malformed.") ;
-        return (R.error_msg "Invalid email")
+        return (error_msg "Invalid email")
     | `End _rest -> return (Ok (List.rev acc))
     | `Await ->
         Flow.input flow raw 0 (Bytes.length raw) >>= fun len ->

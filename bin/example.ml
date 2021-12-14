@@ -1,9 +1,6 @@
 let github_com = Domain_name.of_string_exn "github.com"
-
 let janestreet_com = Domain_name.of_string_exn "janestreet.com"
-
 let noreply_github_com = Colombe.Path.of_string_exn "<noreply@github.com>"
-
 let tbraibant = Colombe.Path.of_string_exn "<tbraibant@janestreet.com>"
 
 let receiver =
@@ -37,13 +34,9 @@ let reporter ppf =
   { Logs.report }
 
 let sigpipe = 13
-
 let () = Mirage_crypto_rng_unix.initialize ()
-
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
-
 let () = Logs.set_reporter (reporter Fmt.stdout)
-
 let () = Logs.set_level ~all:true (Some Logs.Debug)
 
 let () =

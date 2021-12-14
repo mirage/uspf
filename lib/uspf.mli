@@ -114,7 +114,6 @@ module Macro : sig
   type t = macro list * string option
 
   val to_string : t -> string
-
   val pp : t Fmt.t
 
   val expand_string :
@@ -139,11 +138,8 @@ module Term : sig
     list
 
   val to_string : t -> string
-
   val pp : t Fmt.t
-
   val equal : t -> t -> bool
-
   val parse_record : string -> (t, [> `Msg of string ]) result
 end
 
@@ -287,7 +283,6 @@ type res =
   | `Permerror ]
 
 val pp : record Fmt.t
-
 val pp_res : res Fmt.t
 
 val get :
@@ -344,7 +339,6 @@ val extract_received_spf :
 (** / *)
 
 val select_spf1 : string list -> (string, [> `None ]) result
-
 val field_received_spf : Mrmime.Field_name.t
 
 val parse_received_spf_field_value :

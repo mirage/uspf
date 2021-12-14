@@ -1,5 +1,3 @@
-open Rresult
-
 module Unix_scheduler = Uspf.Sigs.Make (struct
   type 'a t = 'a
 end)
@@ -11,7 +9,6 @@ let state =
 
 module DNS = struct
   type t = Dns_client_unix.t
-
   and backend = Unix_scheduler.t
 
   and error =
@@ -26,11 +23,12 @@ end
 
 module Flow = struct
   type flow = in_channel
-
   and backend = Unix_scheduler.t
 
   let input ic tmp off len = Unix_scheduler.inj @@ input ic tmp off len
 end
+
+let ( >>| ) x f = Result.map f x
 
 let check ?nameservers ~timeout ctx =
   let dns = Dns_client_unix.create ?nameservers ~timeout () in
