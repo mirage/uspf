@@ -1021,7 +1021,7 @@ and go :
     (qualifier * mechanism) list ->
     (res, t) io =
  fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) -> function
-  | [] -> assert false (* TODO *)
+  | [] -> return `Neutral
   | (q, mechanism) :: r when limit < 10 -> (
       let ( >>= ) = bind in
       apply ~ctx ~limit state dns (module DNS) (q, mechanism) >>= function
