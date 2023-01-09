@@ -525,15 +525,15 @@ let pp_dual_cidr ppf = function
 
 let pp_mechanism ppf = function
   | A (v, cidr_v4, cidr_v6) ->
-      Fmt.pf ppf "a:%a%a"
-        Fmt.(option Domain_name.pp)
+      Fmt.pf ppf "a%a%a"
+        Fmt.(option (any ":" ++  Domain_name.pp))
         v pp_dual_cidr (cidr_v4, cidr_v6)
   | All -> Fmt.string ppf "all"
   | Exists v -> Fmt.pf ppf "exists:%a" Domain_name.pp v
   | Include v -> Fmt.pf ppf "include:%a" Domain_name.pp v
   | Mx (v, cidr_v4, cidr_v6) ->
-      Fmt.pf ppf "mx:%a%a"
-        Fmt.(option Domain_name.pp)
+      Fmt.pf ppf "mx%a%a"
+        Fmt.(option (any ":" ++ Domain_name.pp))
         v pp_dual_cidr (cidr_v4, cidr_v6)
   | Ptr (Some v) -> Fmt.pf ppf "ptr:%a" Domain_name.pp v
   | Ptr None -> ()
