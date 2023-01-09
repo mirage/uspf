@@ -971,9 +971,25 @@ and apply :
       a_mechanism ~ctx ~limit state dns
         (module DNS)
         q domain_name (cidr_ipv4, cidr_ipv6)
+  | A (None, cidr_ipv4, cidr_ipv6) ->
+      let domain_name = Map.get Map.K.domain ctx in
+      Log.debug (fun m ->
+          m "Apply A mechanism with no domain, using %a."
+            Domain_name.pp domain_name) ;
+      a_mechanism ~ctx ~limit state dns
+        (module DNS)
+        q domain_name (cidr_ipv4, cidr_ipv6)
   | Mx (Some domain_name, cidr_ipv4, cidr_ipv6) ->
       Log.debug (fun m ->
           m "Apply MX mechanism with %a." Domain_name.pp domain_name) ;
+      mx_mechanism ~ctx ~limit state dns
+        (module DNS)
+        q domain_name (cidr_ipv4, cidr_ipv6)
+  | Mx (None, cidr_ipv4, cidr_ipv6) ->
+      let domain_name = Map.get Map.K.domain ctx in
+      Log.debug (fun m ->
+          m "Apply MX mechanism with no domain, using %a."
+            Domain_name.pp domain_name) ;
       mx_mechanism ~ctx ~limit state dns
         (module DNS)
         q domain_name (cidr_ipv4, cidr_ipv6)
@@ -993,7 +1009,6 @@ and apply :
       return
         (of_qualifier ~mechanism q
            (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6)))
-  | A (None, _, _) | Mx (None, _, _) -> return `Continue
   | Exists domain_name ->
       exists_mechanism ~ctx ~limit state dns (module DNS) q domain_name
   | Ptr _ -> return `Continue
