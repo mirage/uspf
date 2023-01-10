@@ -47,7 +47,9 @@
     optional to give your identity (your domain) to be exhaustive about {i meta}
     information on the field value:
 
-    {[ let field_name, value = Spf.to_field ~ctx ?receiver res ]}
+    {[
+      let field_name, value = Spf.to_field ~ctx ?receiver res
+    ]}
 
     The value is well-formed for the incoming email. You just need to prepend
     the field before the email.
