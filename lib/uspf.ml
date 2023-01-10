@@ -526,7 +526,7 @@ let pp_dual_cidr ppf = function
 let pp_mechanism ppf = function
   | A (v, cidr_v4, cidr_v6) ->
       Fmt.pf ppf "a%a%a"
-        Fmt.(option (any ":" ++  Domain_name.pp))
+        Fmt.(option (any ":" ++ Domain_name.pp))
         v pp_dual_cidr (cidr_v4, cidr_v6)
   | All -> Fmt.string ppf "all"
   | Exists v -> Fmt.pf ppf "exists:%a" Domain_name.pp v
@@ -974,8 +974,8 @@ and apply :
   | A (None, cidr_ipv4, cidr_ipv6) ->
       let domain_name = Map.get Map.K.domain ctx in
       Log.debug (fun m ->
-          m "Apply A mechanism with no domain, using %a."
-            Domain_name.pp domain_name) ;
+          m "Apply A mechanism with no domain, using %a." Domain_name.pp
+            domain_name) ;
       a_mechanism ~ctx ~limit state dns
         (module DNS)
         q domain_name (cidr_ipv4, cidr_ipv6)
@@ -988,8 +988,8 @@ and apply :
   | Mx (None, cidr_ipv4, cidr_ipv6) ->
       let domain_name = Map.get Map.K.domain ctx in
       Log.debug (fun m ->
-          m "Apply MX mechanism with no domain, using %a."
-            Domain_name.pp domain_name) ;
+          m "Apply MX mechanism with no domain, using %a." Domain_name.pp
+            domain_name) ;
       mx_mechanism ~ctx ~limit state dns
         (module DNS)
         q domain_name (cidr_ipv4, cidr_ipv6)

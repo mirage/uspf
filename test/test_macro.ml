@@ -1,7 +1,7 @@
 open Rresult
 
 let msg = Alcotest.testable Rresult.R.pp_msg ( = )
-let ( <.> ) f g = fun x -> f (g x)
+let ( <.> ) f g x = f (g x)
 
 let test01 =
   Alcotest.test_case "rfc7208" `Quick @@ fun () ->
@@ -132,10 +132,14 @@ let test04 =
 
 let test05 =
   Alcotest.test_case "mx optional domain name" `Quick @@ fun () ->
-  let module Caml = Uspf.Sigs.Make (struct type 'a t = 'a end) in
+  let module Caml = Uspf.Sigs.Make (struct
+    type 'a t = 'a
+  end) in
   let state =
-    { Uspf.Sigs.bind= (fun x f -> f (Caml.prj x))
-    ; Uspf.Sigs.return= Caml.inj } in
+    {
+      Uspf.Sigs.bind = (fun x f -> f (Caml.prj x));
+      Uspf.Sigs.return = Caml.inj;
+    } in
   let module DNS = struct
     type backend = Caml.t
     type t = unit
@@ -145,33 +149,53 @@ let test05 =
       | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
       | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
 
-    let getrrecord
-      : type a. t -> a Dns.Rr_map.rr -> _ Domain_name.t -> ((a, [> error ]) result, backend) Uspf.Sigs.io
-      = fun () rr domain_name ->
-      let _192_168_1_1 = Ipaddr.V4.(Set.singleton (of_string_exn "192.168.1.1")) in
-      let mxs = Dns.Rr_map.Mx_set.singleton
-        { Dns.Mx.preference= 10
-        ; mail_exchange= Domain_name.(host_exn (of_string_exn "mail.bar.com")) } in
-      Fmt.pr ">>> Ask for %a:%a.\n%!"
-        Dns.Rr_map.ppk (Dns.Rr_map.K rr)
-        Domain_name.pp domain_name;
-      match rr, Domain_name.to_string domain_name with
-      | Dns.Rr_map.Txt, "bar.com" -> Caml.inj (Ok (0l, Dns.Rr_map.Txt_set.singleton "v=spf1 mx a:foo.com -all"))
+    let getrrecord :
+        type a.
+        t ->
+        a Dns.Rr_map.rr ->
+        _ Domain_name.t ->
+        ((a, [> error ]) result, backend) Uspf.Sigs.io =
+     fun () rr domain_name ->
+      let _192_168_1_1 =
+        Ipaddr.V4.(Set.singleton (of_string_exn "192.168.1.1")) in
+      let mxs =
+        Dns.Rr_map.Mx_set.singleton
+          {
+            Dns.Mx.preference = 10;
+            mail_exchange =
+              Domain_name.(host_exn (of_string_exn "mail.bar.com"));
+          } in
+      Fmt.pr ">>> Ask for %a:%a.\n%!" Dns.Rr_map.ppk (Dns.Rr_map.K rr)
+        Domain_name.pp domain_name ;
+      match (rr, Domain_name.to_string domain_name) with
+      | Dns.Rr_map.Txt, "bar.com" ->
+          Caml.inj
+            (Ok (0l, Dns.Rr_map.Txt_set.singleton "v=spf1 mx a:foo.com -all"))
       | Dns.Rr_map.A, "mail.bar.com" -> Caml.inj (Ok (0l, _192_168_1_1))
       | Dns.Rr_map.Mx, "bar.com" -> Caml.inj (Ok (0l, mxs))
-      | _ -> Caml.inj (R.error_msgf "Error on %a:%a." Dns.Rr_map.ppk (Dns.Rr_map.K rr) Domain_name.pp domain_name)
+      | _ ->
+          Caml.inj
+            (R.error_msgf "Error on %a:%a." Dns.Rr_map.ppk (Dns.Rr_map.K rr)
+               Domain_name.pp domain_name)
   end in
   let ctx =
     Uspf.empty
     |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
     |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
     |> Uspf.with_ip (Ipaddr.of_string_exn "192.168.1.1") in
-  match Uspf.get ~ctx state () (module DNS) |> Caml.prj
-        >>| (Caml.prj <.> Uspf.check ~ctx state () (module DNS)) with
+  match
+    Uspf.get ~ctx state () (module DNS)
+    |> Caml.prj
+    >>| (Caml.prj <.> Uspf.check ~ctx state () (module DNS))
+  with
   | Ok (`Pass _) -> Alcotest.(check pass) "spf" () ()
   | Ok res -> Alcotest.failf "Invalid SPF result: %a." Uspf.pp_res res
   | Error (`Msg err) -> Alcotest.failf "%s." err
 
 let () =
   Alcotest.run "decoding"
-    [ ("macro", [ test01; test02 ]); ("record", [ test03; test04 ]); ("spf", [ test05 ]) ]
+    [
+      ("macro", [ test01; test02 ]);
+      ("record", [ test03; test04 ]);
+      ("spf", [ test05 ]);
+    ]
