@@ -34,7 +34,7 @@ let reporter ppf =
   { Logs.report }
 
 let sigpipe = 13
-let () = Mirage_crypto_rng_unix.initialize ()
+let () = Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna)
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stdout)
 let () = Logs.set_level ~all:true (Some Logs.Debug)
