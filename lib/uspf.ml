@@ -187,6 +187,38 @@ module Macro = struct
       else match lst with [] -> acc | x :: r -> go (x :: acc) (n - 1) r in
     go [] n (List.rev lst)
 
+  (* Copyright (c) 2016 The astring programmers *)
+
+  let add ~empty s ~start ~stop acc =
+    if start = stop
+    then if not empty then acc else "" :: acc
+    else String.sub s start (stop - start) :: acc
+
+  let cuts ~empty ~sep s =
+    let sep_len = String.length sep in
+    if sep_len = 0 then invalid_arg "cuts: the separator is empty" ;
+    let s_len = String.length s in
+    let max_sep_idx = sep_len - 1 in
+    let max_s_idx = s_len - sep_len in
+    let rec check_sep start i k acc =
+      if k > max_sep_idx
+      then
+        let new_start = i + sep_len in
+        scan new_start new_start (add ~empty s ~start ~stop:i acc)
+      else if s.[i + k] = sep.[k]
+      then check_sep start i (k + 1) acc
+      else scan start (i + 1) acc
+    and scan start i acc =
+      if i > max_s_idx
+      then
+        if start = 0
+        then if (not empty) && s_len = 0 then [] else [ s ]
+        else List.rev (add ~empty s ~start ~stop:s_len acc)
+      else if s.[i] = sep.[0]
+      then check_sep start i 1 acc
+      else scan start (i + 1) acc in
+    scan 0 0 []
+
   let expand_macro hmp buf = function
     | `Literal str -> Buffer.add_string buf str
     | `Macro_encoded_space -> Buffer.add_string buf "%20"
@@ -197,7 +229,7 @@ module Macro = struct
         let pp = (Map.Key.info key).pp in
         let str = Fmt.str "%a" pp (Map.get key hmp) in
         let sep = if sep = "" then "." else sep in
-        let vs = Astring.String.cuts ~sep str in
+        let vs = cuts ~sep ~empty:true str in
         let vs = if rev then List.rev vs else vs in
         let vs = Option.fold ~none:vs ~some:(fun n -> keep n vs) n in
         let str = String.concat "." vs in

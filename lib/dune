@@ -2,7 +2,6 @@
  (name uspf)
  (public_name uspf)
  (libraries
-  astring
   colombe.emile
   mrmime
   dns
