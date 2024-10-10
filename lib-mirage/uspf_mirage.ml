@@ -22,15 +22,11 @@ module Make (Dns_client : Dns_client_mirage.S) = struct
       | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
 
     let getrrecord dns key domain_name =
-      Dns_client.get_resource_record dns key domain_name
-      |> Lwt_scheduler.inj
+      Dns_client.get_resource_record dns key domain_name |> Lwt_scheduler.inj
   end
 
-  let get ~ctx dns =
-    Uspf.get ~ctx state dns (module Dns)
-    |> Lwt_scheduler.prj
+  let get ~ctx dns = Uspf.get ~ctx state dns (module Dns) |> Lwt_scheduler.prj
 
   let check ~ctx dns record =
-    Uspf.check ~ctx state dns (module Dns) record
-    |> Lwt_scheduler.prj
+    Uspf.check ~ctx state dns (module Dns) record |> Lwt_scheduler.prj
 end

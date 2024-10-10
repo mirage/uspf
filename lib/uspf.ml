@@ -103,7 +103,7 @@ module Macro = struct
     peek_char >>= function
     | Some
         (('s' | 'l' | 'o' | 'd' | 'i' | 'p' | 'h' | 'c' | 'r' | 't' | 'v') as
-        chr) ->
+         chr) ->
         junk_with chr
     | _ -> fail "macro-letter"
 

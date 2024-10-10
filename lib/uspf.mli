@@ -261,7 +261,7 @@ val neutral : mechanism -> qualifier * mechanism
     returns [`Neutral] so. *)
 
 val record : (qualifier * mechanism) list -> modifier list -> record
-(** [record ms \[\]] returns a record which can be serialized into the zone file
+(** [record ms []] returns a record which can be serialized into the zone file
     of a specific domain-name as the sender policy. *)
 
 val record_to_string : record -> string
