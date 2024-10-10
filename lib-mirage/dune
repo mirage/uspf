@@ -1,0 +1,4 @@
+(library
+ (name uspf_mirage)
+ (public_name uspf-mirage)
+ (libraries uspf lwt dns-client-mirage))
