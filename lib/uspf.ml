@@ -947,7 +947,70 @@ let exists_mechanism :
       | Error (`Msg _) -> return `Temperror
       | Error (`No_domain _ | `No_data _) -> return `Continue)
 
-let rec include_mechanism :
+let has_redirect modifiers =
+  let fold acc modifier =
+    match (acc, modifier) with
+    | (Some redirect, acc), modifier -> (Some redirect, modifier :: acc)
+    | (None, acc), modifier ->
+    match Lazy.force modifier with
+    | Redirect redirect -> (Some redirect, acc)
+    | _ -> (None, modifier :: acc)
+    | exception exn -> raise exn in
+  let redirect, modifiers = List.fold_left fold (None, []) modifiers in
+  (redirect, List.rev modifiers)
+
+let rec do_redirect :
+    type dns t.
+    ctx:ctx ->
+    limit:int ->
+    t state ->
+    dns ->
+    (module DNS with type t = dns and type backend = t) ->
+    modifiers:modifier Lazy.t list ->
+    (res, t) io =
+ fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) ~modifiers ->
+  match has_redirect modifiers with
+  | exception _ -> return `Permerror
+  | None, _ -> return `Neutral
+  | Some redirect, modifiers -> (
+      let[@warning "-8"] (Ok domain_name) = Domain_name.of_string redirect in
+      let ( >>= ) = bind in
+      DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
+      | Error (`No_domain _ | `No_data _) ->
+          go ~ctx ~limit:(succ limit) state dns (module DNS) ~modifiers []
+      | Error (`Msg _err) -> return `Temperror
+      | Ok (_, txts) ->
+      match
+        let ( >>= ) x f = Result.bind x f in
+        select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
+      with
+      | Error `None -> return `Permerror (* XXX(dinosaure): see RFC 7208, 6.1 *)
+      | Error (`Msg err) ->
+          Log.err (fun m ->
+              m "Invalid SPF record: %a: %s."
+                Fmt.(Dump.list string)
+                (Dns.Rr_map.Txt_set.elements txts)
+                err) ;
+          return `Permerror
+      | Ok terms -> (
+          let record =
+            List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
+          in
+          let record =
+            {
+              mechanisms = List.rev record.mechanisms;
+              modifiers = List.rev record.modifiers;
+            } in
+          let ctx' = Map.add Map.K.domain domain_name ctx in
+          go ~ctx:ctx' ~limit state dns
+            (module DNS)
+            ~modifiers:record.modifiers record.mechanisms
+          >>= function
+          | `Neutral ->
+              go ~ctx ~limit:(succ limit) state dns (module DNS) ~modifiers []
+          | result -> return result))
+
+and include_mechanism :
     type t dns.
     ctx:ctx ->
     limit:int ->
@@ -1056,7 +1119,9 @@ and check :
     record ->
     (res, t) io =
  fun ~ctx ~limit state dns (module DNS) record ->
-  go ~ctx ~limit state dns (module DNS) record.mechanisms
+  go ~ctx ~limit state dns
+    (module DNS)
+    ~modifiers:record.modifiers record.mechanisms
 
 and go :
     type t dns.
@@ -1065,14 +1130,16 @@ and go :
     t state ->
     dns ->
     (module DNS with type t = dns and type backend = t) ->
+    modifiers:modifier Lazy.t list ->
     (qualifier * mechanism) list ->
     (res, t) io =
- fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) -> function
-  | [] -> return `Neutral
+ fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) ~modifiers ->
+   function
+  | [] -> do_redirect ~ctx ~limit state dns (module DNS) ~modifiers
   | (q, mechanism) :: r when limit < 10 -> (
       let ( >>= ) = bind in
       apply ~ctx ~limit state dns (module DNS) (q, mechanism) >>= function
-      | `Continue -> go ~ctx ~limit state dns (module DNS) r
+      | `Continue -> go ~ctx ~limit state dns (module DNS) ~modifiers r
       | #res as res -> return res)
   | _ -> return `Permerror
 
