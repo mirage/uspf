@@ -954,7 +954,8 @@ let has_redirect modifiers =
     | (None, acc), modifier ->
     match Lazy.force modifier with
     | Redirect redirect -> (Some redirect, acc)
-    | _ -> (None, modifier :: acc) in
+    | _ -> (None, modifier :: acc)
+    | exception exn -> raise exn in
   let redirect, modifiers = List.fold_left fold (None, []) modifiers in
   (redirect, List.rev modifiers)
 
@@ -969,11 +970,10 @@ let rec do_redirect :
     (res, t) io =
  fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) ~modifiers ->
   match has_redirect modifiers with
+  | exception _ -> return `Permerror
   | None, _ -> return `Neutral
-  | Some redirect, modifiers ->
-  match Domain_name.of_string redirect with
-  | Error _ -> return `Permerror
-  | Ok domain_name -> (
+  | Some redirect, modifiers -> (
+      let[@warning "-8"] (Ok domain_name) = Domain_name.of_string redirect in
       let ( >>= ) = bind in
       DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
       | Error (`No_domain _ | `No_data _) ->
@@ -984,7 +984,7 @@ let rec do_redirect :
         let ( >>= ) x f = Result.bind x f in
         select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
       with
-      | Error `None -> return `None (* XXX(dinosaure): see RFC 7208, 4.5 *)
+      | Error `None -> return `Permerror (* XXX(dinosaure): see RFC 7208, 6.1 *)
       | Error (`Msg err) ->
           Log.err (fun m ->
               m "Invalid SPF record: %a: %s."
@@ -1001,7 +1001,8 @@ let rec do_redirect :
               mechanisms = List.rev record.mechanisms;
               modifiers = List.rev record.modifiers;
             } in
-          go ~ctx ~limit state dns
+          let ctx' = Map.add Map.K.domain domain_name ctx in
+          go ~ctx:ctx' ~limit state dns
             (module DNS)
             ~modifiers:record.modifiers record.mechanisms
           >>= function
