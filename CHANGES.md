@@ -1,3 +1,8 @@
+### 0.0.4 (2024-10-25) Paris - France
+
+- Add a `mirage` derivation of `uspf` (#23, @dinosaure)
+- Handle `redirect` modifier (#24, @dinosaure)
+
 ### 0.0.3 (2023-03-09) Paris - France
 
 - Add constraint on `fmt` (@kit-ty-kate, #16)
