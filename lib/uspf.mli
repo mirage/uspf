@@ -80,9 +80,6 @@
     to a simple [string] then and the user can save it into its own
     primary/secondary DNS server. *)
 
-module Sigs = Sigs
-open Sigs
-
 type ctx
 (** The type for contexts. It's a {i heterogeneous map} of values to help uSPF
     to validate the sender. It requires the [MAILFROM] parameter given by the
@@ -93,9 +90,9 @@ val empty : ctx
 (** [empty] is an empty context. *)
 
 val with_sender :
-  [ `HELO of [ `raw ] Domain_name.t | `MAILFROM of Colombe.Path.t ] ->
-  ctx ->
-  ctx
+     [ `HELO of [ `raw ] Domain_name.t | `MAILFROM of Colombe.Path.t ]
+  -> ctx
+  -> ctx
 (** [with_sender v ctx] adds into the given [ctx] the sender of the incoming
     email (its simple domain name or the complete email address). *)
 
@@ -144,9 +141,6 @@ module Term : sig
   val equal : t -> t -> bool
   val parse_record : string -> (t, [> `Msg of string ]) result
 end
-
-type record
-(** The type of SPF records. *)
 
 type mechanism
 (** The type of mechanisms.
@@ -204,7 +198,8 @@ val mx : ?cidr_v4:int -> ?cidr_v6:int -> [ `raw ] Domain_name.t -> mechanism
     {!type:ctx}, we consider that the sender {i matches}.
 
     {b Note}: if the domain-name has no MX record, {!val:check} does not apply
-    the implicit MX rules by querying for an A or AAAA record for the same name. *)
+    the implicit MX rules by querying for an A or AAAA record for the same name.
+*)
 
 val v4 : Ipaddr.V4.Prefix.t -> mechanism
 (** This mechanism test whether the given IP from the given {!type:ctx} is
@@ -260,88 +255,92 @@ val neutral : mechanism -> qualifier * mechanism
     tries the next mechanism. If the mechanism is the last one, {!val:check}
     returns [`Neutral] so. *)
 
-val record : (qualifier * mechanism) list -> modifier list -> record
-(** [record ms []] returns a record which can be serialized into the zone file
-    of a specific domain-name as the sender policy. *)
+module Record : sig
+  type t
 
-val record_to_string : record -> string
-(** [record_to_string v] returns the serialized version of the record to be able
-    to save it into the zone file of a domain-name as the sender policy. *)
+  val v : (qualifier * mechanism) list -> modifier list -> t
+  (** [record ms []] returns a record which can be serialized into the zone file
+      of a specific domain-name as the sender policy. *)
 
-val record_of_string : ctx:ctx -> string -> (record, [> `Msg of string ]) result
-(** [record_of_string ~ctx str] tries to parse {b and} expand macro of the given
-    string which should come from the TXT record of a domain-name as the sender
-    policy of this domain-name. *)
+  val to_string : t -> string
+  (** [record_to_string v] returns the serialized version of the record to be
+      able to save it into the zone file of a domain-name as the sender policy.
+  *)
 
-val record_equal : record -> record -> bool
+  val of_string : ctx:ctx -> string -> (t, [> `Msg of string ]) result
+  (** [record_of_string ~ctx str] tries to parse {b and} expand macro of the
+      given string which should come from the TXT record of a domain-name as the
+      sender policy of this domain-name. *)
 
-type res =
-  [ `None
-  | `Neutral
-  | `Pass of mechanism
-  | `Fail
-  | `Softfail
-  | `Temperror
-  | `Permerror ]
+  val pp : t Fmt.t
+  val equal : t -> t -> bool
+end
 
-val pp : record Fmt.t
-val pp_res : res Fmt.t
+module Result : sig
+  type t =
+    [ `None
+    | `Neutral
+    | `Pass of mechanism
+    | `Fail
+    | `Softfail
+    | `Temperror
+    | `Permerror ]
+end
 
-val get :
-  ctx:ctx ->
-  't state ->
-  'dns ->
-  (module DNS with type t = 'dns and type backend = 't) ->
-  (([ res | `Record of record ], [> `Msg of string ]) result, 't) io
-(** [get ~ctx scheduler dns (module DNS)] tries to get the sender policy of the
-    domain-name given by [ctx]. It requires a [scheduler] which allows the
-    high-kind polymorphism over a monadic scheduler and a DNS implementation to
-    request the sender policy. *)
+type 'a response =
+  ( 'a
+  , [ `Msg of string
+    | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
+    | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ] )
+  result
 
-val check :
-  ctx:ctx ->
-  't state ->
-  'dns ->
-  (module DNS with type t = 'dns and type backend = 't) ->
-  [ res | `Record of record ] ->
-  (res, 't) io
-(** [check ~ctx scheduler dns (module DNS)] tries to check the sender policy
-    with the given [ctx]. It returns the result of this check. *)
+type 'a t =
+  | Request : 'x Domain_name.t * 'a Dns.Rr_map.key -> 'a response t
+  | Return : 'a -> 'a t
+  | Terminate : Result.t -> 'a t
+  | Bind : 'a t * ('a -> 'b t) -> 'b t
+  | Choose_on : {
+        none: (unit -> 'a t) option
+      ; neutral: (unit -> 'a t) option
+      ; pass: (mechanism -> 'a t) option
+      ; fail: (unit -> 'a t) option
+      ; softfail: (unit -> 'a t) option
+      ; temperror: (unit -> 'a t) option
+      ; permerror: (unit -> 'a t) option
+      ; fn: unit -> 'a t
+    }
+      -> 'a t
 
-type newline = LF | CRLF
+val get_and_check : ctx -> unit t
 
 val to_field :
-  ctx:ctx -> ?receiver:Emile.domain -> res -> Mrmime.Field_name.t * Unstrctrd.t
+     ctx:ctx
+  -> ?receiver:Emile.domain
+  -> Result.t
+  -> Mrmime.Field_name.t * Unstrctrd.t
 (** [to_field ~ctx ?received v] serializes as an email field the result of the
     sender policy check according to the given [ctx]. The user is able to
     prepend then its email with this field. *)
 
-type extracted = spf list
+module Extract : sig
+  type result =
+    [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ]
 
-and spf = {
-  result :
-    [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ];
-  receiver : Emile.domain option;
-  sender : Emile.mailbox option;
-  ip : Ipaddr.t option;
-  ctx : ctx;
-}
+  type field = {
+      result: result
+    ; receiver: Emile.domain option
+    ; sender: Emile.mailbox option
+    ; ip: Ipaddr.t option
+    ; ctx: ctx
+  }
 
-val pp_spf : spf Fmt.t
+  type extract
 
-val extract_received_spf :
-  ?newline:newline ->
-  'flow ->
-  't state ->
-  (module Sigs.FLOW with type flow = 'flow and type backend = 't) ->
-  ((extracted, [> `Msg of string ]) result, 't) io
-(** [extract_received_spf ?newline flow scheduler (module Flow)] tries to
-    recognized SPF fields values from the given email represented as a [flow]. *)
+  type decode =
+    [ `Await of extract | `Fields of field list | `Malformed of string ]
 
-(** / *)
-
-val select_spf1 : string list -> (string, [> `None ]) result
-val field_received_spf : Mrmime.Field_name.t
-
-val parse_received_spf_field_value :
-  Unstrctrd.t -> (spf, [> `Msg of string ]) result
+  val pp : field Fmt.t
+  val extractor : unit -> extract
+  val extract : extract -> decode
+  val src : extract -> string -> int -> int -> extract
+end

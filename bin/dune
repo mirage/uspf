@@ -1,3 +1,0 @@
-(executable
- (name example)
- (libraries logs.fmt fmt.tty uspf.unix))

@@ -10,13 +10,9 @@
     For more details about uSPF and how to use it, please take a look on
     {!module:Uspf}. *)
 
-val check :
-  ?nameservers:Dns.proto * (Ipaddr.t * int) list ->
-  timeout:int64 ->
-  Uspf.ctx ->
-  (Uspf.res, [> `Msg of string ]) result
+val get_and_check : Dns_client_unix.t -> Uspf.ctx -> Uspf.Result.t option
 
 val extract_received_spf :
-  ?newline:Uspf.newline ->
-  in_channel ->
-  (Uspf.extracted, [> `Msg of string ]) result
+     ?newline:[ `LF | `CRLF ]
+  -> in_channel
+  -> (Uspf.Extract.field list, [> `Msg of string ]) result

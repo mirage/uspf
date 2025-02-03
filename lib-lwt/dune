@@ -1,4 +1,4 @@
 (library
  (name uspf_lwt)
  (public_name uspf-lwt)
- (libraries uspf lwt))
+ (libraries uspf dns-client-lwt lwt))

@@ -1,14 +1,71 @@
-module Sigs = Sigs
-open Sigs
-
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
-let error_msg msg = Error (`Msg msg)
 let failwith_error_msg = function Ok v -> v | Error (`Msg err) -> failwith err
 let ( >>| ) x f = Result.map f x
-let ( <.> ) f g x = f (g x)
+let ( % ) f g x = f (g x)
 let src = Logs.Src.create "spf"
 
 module Log = (val Logs.src_log src : Logs.LOG)
+
+type mechanism =
+  | A of [ `raw ] Domain_name.t option * int option * int option
+  | All
+  | Exists of [ `raw ] Domain_name.t
+  | Include of [ `raw ] Domain_name.t
+  | Mx of [ `raw ] Domain_name.t option * int option * int option
+  | Ptr of [ `raw ] Domain_name.t option
+  | V4 of Ipaddr.V4.Prefix.t
+  | V6 of Ipaddr.V6.Prefix.t
+
+module Result = struct
+  type t =
+    [ `None
+    | `Neutral
+    | `Pass of mechanism
+    | `Fail
+    | `Softfail
+    | `Temperror
+    | `Permerror ]
+
+  let none = `None
+  let neutral = `Neutral
+  let pass mechanism = `Pass mechanism
+  let fail = `Fail
+  let softfail = `Softfail
+  let temperror = `Temperror
+  let permerror = `Permerror
+end
+
+type 'a response =
+  ( 'a
+  , [ `Msg of string
+    | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
+    | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ] )
+  result
+
+type 'a t =
+  | Request : 'x Domain_name.t * 'a Dns.Rr_map.key -> 'a response t
+  | Return : 'a -> 'a t
+  | Terminate : Result.t -> 'a t
+  | Bind : 'a t * ('a -> 'b t) -> 'b t
+  | Choose_on : {
+        none: (unit -> 'a t) option
+      ; neutral: (unit -> 'a t) option
+      ; pass: (mechanism -> 'a t) option
+      ; fail: (unit -> 'a t) option
+      ; softfail: (unit -> 'a t) option
+      ; temperror: (unit -> 'a t) option
+      ; permerror: (unit -> 'a t) option
+      ; fn: unit -> 'a t
+    }
+      -> 'a t
+
+let ( let* ) x fn = Bind (x, fn)
+let return x = Return x
+let request record domain_name = Request (domain_name, record)
+let terminate result = Terminate result
+
+let choose_on ?none ?neutral ?pass ?fail ?softfail ?temperror ?permerror fn =
+  Choose_on { none; neutral; pass; fail; softfail; temperror; permerror; fn }
 
 type ctx = Map.t
 
@@ -61,16 +118,16 @@ let colombe_domain_to_domain_name = function
 
 let domain ctx =
   match
-    ( Map.find Map.K.helo ctx,
-      Map.find Map.K.domain_of_sender ctx,
-      Map.find Map.K.domain ctx,
-      Map.find Map.K.sender ctx )
+    ( Map.find Map.K.helo ctx
+    , Map.find Map.K.domain_of_sender ctx
+    , Map.find Map.K.domain ctx
+    , Map.find Map.K.sender ctx )
   with
   | _, _, Some v, _ | _, _, _, Some (`HELO v) -> Some v
   | Some v, None, None, None
   | _, Some v, None, None
-  | _, _, _, Some (`MAILFROM { Colombe.Path.domain = v; _ }) ->
-      Result.to_option (colombe_domain_to_domain_name v)
+  | _, _, _, Some (`MAILFROM { Colombe.Path.domain= v; _ }) ->
+      Stdlib.Result.to_option (colombe_domain_to_domain_name v)
   | None, None, None, None -> None
 
 module Macro = struct
@@ -128,10 +185,9 @@ module Macro = struct
       return (`Macro (letter, transformers, delimiter)) in
     choice
       [
-        string "%%" *> return `Macro_percent;
-        string "%_" *> return `Macro_space;
-        string "%-" *> return `Macro_encoded_space;
-        string "%{" *> macro <* string "}";
+        string "%%" *> return `Macro_percent; string "%_" *> return `Macro_space
+      ; string "%-" *> return `Macro_encoded_space
+      ; string "%{" *> macro <* string "}"
       ]
 
   let macro_string = many (macro_expand <|> macro_literal)
@@ -527,63 +583,8 @@ module Term = struct
     | Error _ -> error_msgf "Invalid SPF record: %S" str
 end
 
-type mechanism =
-  | A of [ `raw ] Domain_name.t option * int option * int option
-  | All
-  | Exists of [ `raw ] Domain_name.t
-  | Include of [ `raw ] Domain_name.t
-  | Mx of [ `raw ] Domain_name.t option * int option * int option
-  | Ptr of [ `raw ] Domain_name.t option
-  | V4 of Ipaddr.V4.Prefix.t
-  | V6 of Ipaddr.V6.Prefix.t
-
-let a ?cidr_v4 ?cidr_v6 domain_name = A (Some domain_name, cidr_v4, cidr_v6)
-let all = All
-let exists domain_name = Exists domain_name
-let inc domain_name = Include domain_name
-(* TODO(dinosaure): currently, [mechanism] is a **result** of the macro
-   expansion - the user can not specify by this way its own macro, he can
-   specify only a domain-name. We must provide something else than the
-   [mechanism] type which accepts macro. *)
-
-let mx ?cidr_v4 ?cidr_v6 domain_name = Mx (Some domain_name, cidr_v4, cidr_v6)
-let v4 v = V4 v
-let v6 v = V6 v
-let pp_cidr ppf = function None -> () | Some v -> Fmt.pf ppf "/%d" v
-
-let pp_dual_cidr ppf = function
-  | v4, (Some _ as v6) -> Fmt.pf ppf "%a/%a" pp_cidr v4 pp_cidr v6
-  | v4, None -> Fmt.pf ppf "%a" pp_cidr v4
-
-let pp_mechanism ppf = function
-  | A (v, cidr_v4, cidr_v6) ->
-      Fmt.pf ppf "a%a%a"
-        Fmt.(option (any ":" ++ Domain_name.pp))
-        v pp_dual_cidr (cidr_v4, cidr_v6)
-  | All -> Fmt.string ppf "all"
-  | Exists v -> Fmt.pf ppf "exists:%a" Domain_name.pp v
-  | Include v -> Fmt.pf ppf "include:%a" Domain_name.pp v
-  | Mx (v, cidr_v4, cidr_v6) ->
-      Fmt.pf ppf "mx%a%a"
-        Fmt.(option (any ":" ++ Domain_name.pp))
-        v pp_dual_cidr (cidr_v4, cidr_v6)
-  | Ptr (Some v) -> Fmt.pf ppf "ptr:%a" Domain_name.pp v
-  | Ptr None -> ()
-  | V4 ipv4 -> Fmt.pf ppf "ip4:%a" Ipaddr.V4.Prefix.pp ipv4
-  | V6 ipv6 -> Fmt.pf ppf "ip6:%a" Ipaddr.V6.Prefix.pp ipv6
-
 type qualifier = Pass | Fail | Softfail | Neutral
-
-let pass m = (Pass, m)
-let fail m = (Fail, m)
-let softfail m = (Softfail, m)
-let neutral m = (Neutral, m)
-
-let pp_qualifier ppf = function
-  | Pass -> ()
-  | Fail -> Fmt.string ppf "-"
-  | Softfail -> Fmt.string ppf "~"
-  | Neutral -> Fmt.string ppf "?"
+type modifier = Explanation of string | Redirect of string
 
 let qualifier_of_letter = function
   | Some '+' | None -> Pass
@@ -592,27 +593,9 @@ let qualifier_of_letter = function
   | Some '?' -> Neutral
   | _ -> invalid_arg "qualifier_of_letter"
 
-type modifier = Explanation of string | Redirect of string
-
-let pp_modifier ppf = function
-  | Explanation v -> Fmt.pf ppf "exp=%s" v
-  | Redirect v -> Fmt.pf ppf "redirect=%s" v
-
-type record = {
-  mechanisms : (qualifier * mechanism) list;
-  modifiers : modifier Lazy.t list;
-}
-
-let record_equal : record -> record -> bool =
- fun a b ->
-  (* TODO(dinosaure): replace [Stdlib.compare]. *)
-  let ma = List.sort Stdlib.compare a.mechanisms in
-  let mb = List.sort Stdlib.compare b.mechanisms in
-  try List.for_all2 ( = ) ma mb with _ -> false
-
 let concat sep lst =
   let _, lst = List.partition (( = ) "") lst in
-  let len = List.fold_right (( + ) <.> String.length) lst 0 in
+  let len = List.fold_right (( + ) % String.length) lst 0 in
   match lst with
   | [] -> ""
   | [ x ] -> x
@@ -625,138 +608,157 @@ let concat sep lst =
         Bytes.blit_string sep 0 res !pos sep_len ;
         Bytes.blit_string x 0 res (!pos + sep_len) (String.length x) ;
         pos := !pos + sep_len + String.length x in
-      List.iter blit r ;
-      Bytes.unsafe_to_string res
+      List.iter blit r ; Bytes.unsafe_to_string res
 
-let record_to_string { mechanisms; modifiers } =
-  let mechanism_to_string (q, m) =
-    Fmt.str "%a%a" pp_qualifier q pp_mechanism m in
-  let modifier_to_string m = Fmt.to_to_string pp_modifier m in
-  let mechanisms = List.map mechanism_to_string mechanisms in
-  let modifiers = List.map (modifier_to_string <.> Lazy.force) modifiers in
-  concat " " [ concat " " mechanisms; concat " " modifiers ]
+module Record = struct
+  type t = {
+      mechanisms: (qualifier * mechanism) list
+    ; modifiers: modifier Lazy.t list
+  }
 
-let record mechanisms modifiers =
-  { mechanisms; modifiers = List.map Lazy.from_val modifiers }
+  let equal : t -> t -> bool =
+   fun a b ->
+    (* TODO(dinosaure): replace [Stdlib.compare]. *)
+    let ma = List.sort Stdlib.compare a.mechanisms in
+    let mb = List.sort Stdlib.compare b.mechanisms in
+    try List.for_all2 ( = ) ma mb with _ -> false
 
-let pp ppf { mechanisms; modifiers } =
-  Fmt.pf ppf "%a"
-    Fmt.(list ~sep:(any " ") (pair ~sep:nop pp_qualifier pp_mechanism))
-    mechanisms ;
-  match modifiers with
-  | [] -> ()
-  | _ :: _ ->
-      let modifiers = List.map Lazy.force modifiers in
-      Fmt.pf ppf " %a" Fmt.(list ~sep:(any " ") pp_modifier) modifiers
+  let v mechanisms modifiers =
+    { mechanisms; modifiers= List.map Lazy.from_val modifiers }
 
-let fold ctx acc = function
-  | `Directive (qualifier, `A (macro, (cidr_v4, cidr_v6))) ->
-      let macro =
-        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
-      let macro = Option.join macro in
-      let mechanism =
-        (qualifier_of_letter qualifier, A (macro, cidr_v4, cidr_v6)) in
-      { acc with mechanisms = mechanism :: acc.mechanisms }
-  | `Directive (qualifier, `All) ->
-      {
-        acc with
-        mechanisms = (qualifier_of_letter qualifier, All) :: acc.mechanisms;
-      }
-  | `Directive (qualifier, `Exists macro) -> (
-      let qualifier = qualifier_of_letter qualifier in
-      match Macro.expand_macro ctx macro with
-      | Ok macro ->
-          { acc with mechanisms = (qualifier, Exists macro) :: acc.mechanisms }
-      | Error _ -> acc
-      (* TODO *))
-  | `Directive (qualifier, `Include macro) -> (
-      let qualifier = qualifier_of_letter qualifier in
-      match Macro.expand_macro ctx macro with
-      | Ok macro ->
-          { acc with mechanisms = (qualifier, Include macro) :: acc.mechanisms }
-      | Error _ -> acc
-      (* TODO *))
-  | `Directive (qualifier, `Mx (macro, (cidr_v4, cidr_v6))) ->
-      let macro =
-        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
-      let macro = Option.join macro in
-      let mechanism =
-        (qualifier_of_letter qualifier, Mx (macro, cidr_v4, cidr_v6)) in
-      { acc with mechanisms = mechanism :: acc.mechanisms }
-  | `Directive (qualifier, `Ptr macro) ->
-      let qualifier = qualifier_of_letter qualifier in
-      let macro =
-        Option.map (Result.to_option <.> Macro.expand_macro ctx) macro in
-      let macro = Option.join macro in
-      { acc with mechanisms = (qualifier, Ptr macro) :: acc.mechanisms }
-  | `Directive (qualifier, `V4 ipv4) ->
-      let qualifier = qualifier_of_letter qualifier in
-      { acc with mechanisms = (qualifier, V4 ipv4) :: acc.mechanisms }
-  | `Directive (qualifier, `V6 ipv6) ->
-      let qualifier = qualifier_of_letter qualifier in
-      { acc with mechanisms = (qualifier, V6 ipv6) :: acc.mechanisms }
-  | `Explanation macro ->
-      let modifier =
-        Lazy.from_fun @@ fun () ->
-        Explanation
-          (Domain_name.to_string
-          @@ failwith_error_msg (Macro.expand_macro ctx macro)) in
-      { acc with modifiers = modifier :: acc.modifiers }
-  | `Redirect macro ->
-      let modifier =
-        Lazy.from_fun @@ fun () ->
-        Redirect
-          (Domain_name.to_string
-          @@ failwith_error_msg (Macro.expand_macro ctx macro)) in
-      { acc with modifiers = modifier :: acc.modifiers }
-  | `Unknown _ -> acc
+  let pp_qualifier ppf = function
+    | Pass -> ()
+    | Fail -> Fmt.string ppf "-"
+    | Softfail -> Fmt.string ppf "~"
+    | Neutral -> Fmt.string ppf "?"
 
-let record_of_string ~ctx str =
-  Term.parse_record str >>| fun terms ->
-  List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
+  let pp_cidr ppf = function None -> () | Some v -> Fmt.pf ppf "/%d" v
+
+  let pp_dual_cidr ppf = function
+    | v4, (Some _ as v6) -> Fmt.pf ppf "%a/%a" pp_cidr v4 pp_cidr v6
+    | v4, None -> Fmt.pf ppf "%a" pp_cidr v4
+
+  let pp_mechanism ppf = function
+    | A (v, cidr_v4, cidr_v6) ->
+        Fmt.pf ppf "a%a%a"
+          Fmt.(option (any ":" ++ Domain_name.pp))
+          v pp_dual_cidr (cidr_v4, cidr_v6)
+    | All -> Fmt.string ppf "all"
+    | Exists v -> Fmt.pf ppf "exists:%a" Domain_name.pp v
+    | Include v -> Fmt.pf ppf "include:%a" Domain_name.pp v
+    | Mx (v, cidr_v4, cidr_v6) ->
+        Fmt.pf ppf "mx%a%a"
+          Fmt.(option (any ":" ++ Domain_name.pp))
+          v pp_dual_cidr (cidr_v4, cidr_v6)
+    | Ptr (Some v) -> Fmt.pf ppf "ptr:%a" Domain_name.pp v
+    | Ptr None -> ()
+    | V4 ipv4 -> Fmt.pf ppf "ip4:%a" Ipaddr.V4.Prefix.pp ipv4
+    | V6 ipv6 -> Fmt.pf ppf "ip6:%a" Ipaddr.V6.Prefix.pp ipv6
+
+  let pp_modifier ppf = function
+    | Explanation v -> Fmt.pf ppf "exp=%s" v
+    | Redirect v -> Fmt.pf ppf "redirect=%s" v
+
+  let pp ppf { mechanisms; modifiers } =
+    Fmt.pf ppf "%a"
+      Fmt.(list ~sep:(any " ") (pair ~sep:nop pp_qualifier pp_mechanism))
+      mechanisms ;
+    match modifiers with
+    | [] -> ()
+    | _ :: _ ->
+        let modifiers = List.map Lazy.force modifiers in
+        Fmt.pf ppf " %a" Fmt.(list ~sep:(any " ") pp_modifier) modifiers
+
+  let to_string { mechanisms; modifiers } =
+    let mechanism_to_string (q, m) =
+      Fmt.str "%a%a" pp_qualifier q pp_mechanism m in
+    let modifier_to_string m = Fmt.to_to_string pp_modifier m in
+    let mechanisms = List.map mechanism_to_string mechanisms in
+    let modifiers = List.map (modifier_to_string % Lazy.force) modifiers in
+    concat " " [ concat " " mechanisms; concat " " modifiers ]
+
+  let fold ctx acc = function
+    | `Directive (qualifier, `A (macro, (cidr_v4, cidr_v6))) ->
+        let macro =
+          Option.map (Stdlib.Result.to_option % Macro.expand_macro ctx) macro
+        in
+        let macro = Option.join macro in
+        let mechanism =
+          (qualifier_of_letter qualifier, A (macro, cidr_v4, cidr_v6)) in
+        { acc with mechanisms= mechanism :: acc.mechanisms }
+    | `Directive (qualifier, `All) ->
+        {
+          acc with
+          mechanisms= (qualifier_of_letter qualifier, All) :: acc.mechanisms
+        }
+    | `Directive (qualifier, `Exists macro) -> (
+        let qualifier = qualifier_of_letter qualifier in
+        match Macro.expand_macro ctx macro with
+        | Ok macro ->
+            { acc with mechanisms= (qualifier, Exists macro) :: acc.mechanisms }
+        | Error _ -> acc
+        (* TODO *))
+    | `Directive (qualifier, `Include macro) -> (
+        let qualifier = qualifier_of_letter qualifier in
+        match Macro.expand_macro ctx macro with
+        | Ok macro ->
+            {
+              acc with
+              mechanisms= (qualifier, Include macro) :: acc.mechanisms
+            }
+        | Error _ -> acc
+        (* TODO *))
+    | `Directive (qualifier, `Mx (macro, (cidr_v4, cidr_v6))) ->
+        let macro =
+          Option.map (Stdlib.Result.to_option % Macro.expand_macro ctx) macro
+        in
+        let macro = Option.join macro in
+        let mechanism =
+          (qualifier_of_letter qualifier, Mx (macro, cidr_v4, cidr_v6)) in
+        { acc with mechanisms= mechanism :: acc.mechanisms }
+    | `Directive (qualifier, `Ptr macro) ->
+        let qualifier = qualifier_of_letter qualifier in
+        let macro =
+          Option.map (Stdlib.Result.to_option % Macro.expand_macro ctx) macro
+        in
+        let macro = Option.join macro in
+        { acc with mechanisms= (qualifier, Ptr macro) :: acc.mechanisms }
+    | `Directive (qualifier, `V4 ipv4) ->
+        let qualifier = qualifier_of_letter qualifier in
+        { acc with mechanisms= (qualifier, V4 ipv4) :: acc.mechanisms }
+    | `Directive (qualifier, `V6 ipv6) ->
+        let qualifier = qualifier_of_letter qualifier in
+        { acc with mechanisms= (qualifier, V6 ipv6) :: acc.mechanisms }
+    | `Explanation macro ->
+        let modifier =
+          Lazy.from_fun @@ fun () ->
+          let macro = Macro.expand_macro ctx macro in
+          let macro = failwith_error_msg macro in
+          let e = Domain_name.to_string macro in
+          Explanation e in
+        { acc with modifiers= modifier :: acc.modifiers }
+    | `Redirect macro ->
+        let modifier =
+          Lazy.from_fun @@ fun () ->
+          let macro = Macro.expand_macro ctx macro in
+          let macro = failwith_error_msg macro in
+          let r = Domain_name.to_string macro in
+          Redirect r in
+        { acc with modifiers= modifier :: acc.modifiers }
+    | `Unknown _ -> acc
+
+  let of_string ~ctx str =
+    Term.parse_record str >>| fun terms ->
+    List.fold_left (fold ctx) { mechanisms= []; modifiers= [] } terms
+end
 
 let rec select_spf1 = function
-  | [] -> Error `None
+  | [] -> None
   | x :: r when String.length x >= 6 ->
-      if String.sub x 0 6 = "v=spf1" then Ok x else select_spf1 r
+      if String.sub x 0 6 = "v=spf1" then Some x else select_spf1 r
   | _ :: r -> select_spf1 r
 
-type res =
-  [ `None
-  | `Neutral
-  | `Pass of mechanism
-  | `Fail
-  | `Softfail
-  | `Temperror
-  | `Permerror ]
-
-let pp_res ppf = function
-  | `None -> Fmt.pf ppf "none"
-  | `Neutral -> Fmt.pf ppf "neutral"
-  | `Pass _ -> Fmt.pf ppf "pass"
-  | `Fail -> Fmt.pf ppf "fail"
-  | `Softfail -> Fmt.pf ppf "softfail"
-  | `Temperror -> Fmt.pf ppf "temperror"
-  | `Permerror -> Fmt.pf ppf "permerror"
-
-let get :
-    type dns t.
-    ctx:ctx ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    (([ res | `Record of record ], [> `Msg of string ]) result, t) io =
- fun ~ctx { bind; return } dns (module DNS) ->
-  let ( >>= ) = bind in
-  match Map.find Map.K.domain ctx with
-  | None -> return (error_msgf "Missing domain-name into the given context")
-  | Some domain_name -> (
-      DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
-      | Error (`No_domain _ | `No_data _) -> return (Ok `None)
-      | Error (`Msg err) ->
-          Log.err (fun m -> m "Got an error while requesting DNS: %s." err) ;
-          return (Ok `Temperror)
-      | Ok (_, txts) ->
+(*
       match
         let ( >>= ) x f = Result.bind x f in
         select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
@@ -779,15 +781,16 @@ let get :
                  {
                    mechanisms = List.rev record.mechanisms;
                    modifiers = List.rev record.modifiers;
-                 })))
+                 }))
+*)
 
 let of_qualifier ~mechanism q match' =
   match (q, match') with
-  | Pass, true -> `Pass mechanism
-  | Fail, true -> `Fail
-  | Softfail, true -> `Softfail
-  | Neutral, true -> `Neutral
-  | _ -> `Continue
+  | Pass, true -> terminate (Result.pass mechanism)
+  | Fail, true -> terminate Result.fail
+  | Softfail, true -> terminate Result.softfail
+  | Neutral, true -> terminate Result.neutral
+  | _ -> return ()
 
 let ipv4_with_cidr cidr v4 =
   Option.fold
@@ -801,151 +804,81 @@ let ipv6_with_cidr cidr v6 =
     ~some:(fun v -> Ipaddr.V6.Prefix.make v v6)
     cidr
 
-let ipaddrs_of_mx :
-    type t dns.
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    Dns.Mx.t ->
-    int option * int option ->
-    ((Ipaddr.Prefix.t list, [> `Temperror ]) result, t) io =
- fun { return; bind } dns (module DNS) { Dns.Mx.mail_exchange; _ }
-     (cidr_v4, cidr_v6) ->
-  let ( >>= ) = bind in
-  DNS.getrrecord dns Dns.Rr_map.A mail_exchange >>= function
+let ipaddrs_of_mx { Dns.Mx.mail_exchange; _ } (cidr_v4, cidr_v6) =
+  let* response = request Dns.Rr_map.A mail_exchange in
+  match response with
   | Ok (_, v4s) ->
       let v4s = Ipaddr.V4.Set.elements v4s in
       let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
-      return (Ok (List.map (fun v -> Ipaddr.V4 v) v4s))
+      return (List.map (fun v -> Ipaddr.V4 v) v4s)
   | Error _ -> (
-      (* XXX(dinosaure): care about [`Msg _] and return [`Temperror]? *)
-      DNS.getrrecord dns Dns.Rr_map.Aaaa mail_exchange
-      >>= function
+      let* response = request Dns.Rr_map.Aaaa mail_exchange in
+      match response with
       | Ok (_, v6s) ->
           let v6s = Ipaddr.V6.Set.elements v6s in
           let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
-          return (Ok (List.map (fun v -> Ipaddr.V6 v) v6s))
-      | Error (`Msg _) -> return (Error `Temperror)
-      | Error (`No_domain _ | `No_data _) -> return (Ok []))
+          return (List.map (fun v -> Ipaddr.V6 v) v6s)
+      | Error (`Msg _) -> terminate Result.temperror
+      | Error (`No_domain _ | `No_data _) -> return [])
 
-let rec mx_mechanism :
-    type t dns.
-    ctx:ctx ->
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    qualifier ->
-    'a Domain_name.t ->
-    int option * int option ->
-    ([ `Continue | res ], t) io =
- fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) q domain_name
-     dual_cidr ->
-  let ( >>= ) = bind in
-  DNS.getrrecord dns Dns.Rr_map.Mx domain_name >>= function
-  | Error (`Msg _) -> return `Temperror
-  | Error (`No_data _ | `No_domain _) (* RCODE:3 *) -> return `Continue
+let rec mx_mechanism ctx ~limit q domain_name dual_cidr =
+  let* response = request Dns.Rr_map.Mx domain_name in
+  match response with
+  | Error (`Msg _) -> terminate Result.temperror
+  | Error (`No_data _ | `No_domain _) (* RCODE:3 *) -> return ()
   | Ok (_, mxs) ->
-      go ~limit state dns
-        (module DNS)
-        q (Map.get Map.K.ip ctx)
+      go ~limit q (Map.get Map.K.ip ctx)
         (Dns.Rr_map.Mx_set.elements mxs)
         domain_name dual_cidr
 
-and go :
-    type t dns.
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    qualifier ->
-    Ipaddr.t ->
-    Dns.Mx.t list ->
-    [ `raw ] Domain_name.t ->
-    int option * int option ->
-    ([ `Continue | res ], t) io =
- fun ~limit ({ bind; return } as state) dns (module DNS) q expected mxs
-     domain_name ((cidr_v4, cidr_v6) as dual_cidr) ->
-  let ( >>= ) = bind in
+and go ~limit q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
   if limit >= 10
-  then return `Permerror
+  then terminate Result.permerror
   else
     let mechanism = Mx (Some domain_name, cidr_v4, cidr_v6) in
     match mxs with
-    | [] -> return `Continue
-    | mx :: mxs -> (
-        ipaddrs_of_mx state dns (module DNS) mx dual_cidr >>= function
-        | Error `Temperror -> return `Temperror
-        | Ok vs ->
-        match
-          of_qualifier ~mechanism q
-            (List.exists (Ipaddr.Prefix.mem expected) vs)
-        with
-        | `Continue ->
-            go ~limit:(succ limit) state dns
-              (module DNS)
-              q expected mxs domain_name dual_cidr
-        | #res as res -> return res)
+    | [] -> return ()
+    | mx :: mxs ->
+        let* ipaddrs = ipaddrs_of_mx mx dual_cidr in
+        let exists = List.exists (Ipaddr.Prefix.mem expected) ipaddrs in
+        let* () = of_qualifier ~mechanism q exists in
+        go ~limit:(succ limit) q expected mxs domain_name dual_cidr
 
-let a_mechanism :
-    type t dns.
-    ctx:ctx ->
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    qualifier ->
-    'a Domain_name.t ->
-    int option * int option ->
-    ([ `Continue | res ], t) io =
- fun ~ctx ~limit:_ { bind; return } dns (module DNS) q domain_name
-     (cidr_v4, cidr_v6) ->
-  let ( >>= ) = bind in
+let a_mechanism ctx ~limit:_ q domain_name (cidr_v4, cidr_v6) =
   let mechanism = A (Some domain_name, cidr_v4, cidr_v6) in
-  DNS.getrrecord dns Dns.Rr_map.A domain_name >>= function
+  let* response = request Dns.Rr_map.A domain_name in
+  match response with
   | Ok (_, v4s) ->
       let v4s = Ipaddr.V4.Set.elements v4s in
       let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
       let expected = Map.get Map.K.ip ctx in
-      return
-        (of_qualifier ~mechanism q
-           (List.exists
-              (Ipaddr.Prefix.mem expected)
-              (List.map (fun v -> Ipaddr.V4 v) v4s)))
+      let v4s = List.map (fun v -> Ipaddr.V4 v) v4s in
+      let exists = List.exists (Ipaddr.Prefix.mem expected) v4s in
+      of_qualifier ~mechanism q exists
   | Error _ -> (
-      DNS.getrrecord dns Dns.Rr_map.Aaaa domain_name >>= function
+      let* response = request Dns.Rr_map.Aaaa domain_name in
+      match response with
       | Ok (_, v6s) ->
           let v6s = Ipaddr.V6.Set.elements v6s in
           let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
           let expected = Map.get Map.K.ip ctx in
-          return
-            (of_qualifier ~mechanism q
-               (List.exists
-                  (Ipaddr.Prefix.mem expected)
-                  (List.map (fun v -> Ipaddr.V6 v) v6s)))
-      | Error (`Msg _) -> return `Temperror
-      | Error (`No_domain _ | `No_data _) -> return `Continue)
+          let v6s = List.map (fun v -> Ipaddr.V6 v) v6s in
+          let exists = List.exists (Ipaddr.Prefix.mem expected) v6s in
+          of_qualifier ~mechanism q exists
+      | Error (`Msg _) -> terminate Result.temperror
+      | Error (`No_domain _ | `No_data _) -> return ())
 
-let exists_mechanism :
-    type t dns.
-    ctx:ctx ->
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    qualifier ->
-    'a Domain_name.t ->
-    ([ `Continue | res ], t) io =
- fun ~ctx:_ ~limit:_ { bind; return } dns (module DNS) q domain_name ->
-  let ( >>= ) = bind in
+let exists_mechanism _ctx ~limit:_ q domain_name =
   let mechanism = Exists domain_name in
-  DNS.getrrecord dns Dns.Rr_map.A domain_name >>= function
-  | Ok _ -> return (of_qualifier ~mechanism q true)
+  let* response = request Dns.Rr_map.A domain_name in
+  match response with
+  | Ok _ -> of_qualifier ~mechanism q true
   | Error _ -> (
-      DNS.getrrecord dns Dns.Rr_map.Aaaa domain_name >>= function
-      | Ok _ -> return (of_qualifier ~mechanism q true)
-      | Error (`Msg _) -> return `Temperror
-      | Error (`No_domain _ | `No_data _) -> return `Continue)
+      let* response = request Dns.Rr_map.Aaaa domain_name in
+      match response with
+      | Ok _ -> of_qualifier ~mechanism q true
+      | Error (`Msg _) -> terminate Result.temperror
+      | Error (`No_domain _ | `No_data _) -> return ())
 
 let has_redirect modifiers =
   let fold acc modifier =
@@ -959,27 +892,39 @@ let has_redirect modifiers =
   let redirect, modifiers = List.fold_left fold (None, []) modifiers in
   (redirect, List.rev modifiers)
 
-let rec do_redirect :
-    type dns t.
-    ctx:ctx ->
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    modifiers:modifier Lazy.t list ->
-    (res, t) io =
- fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) ~modifiers ->
+let rec do_redirect ctx ~limit ~modifiers =
   match has_redirect modifiers with
-  | exception _ -> return `Permerror
-  | None, _ -> return `Neutral
+  | exception _ -> terminate Result.permerror
+  | None, _ -> terminate Result.neutral
   | Some redirect, modifiers -> (
-      let[@warning "-8"] (Ok domain_name) = Domain_name.of_string redirect in
-      let ( >>= ) = bind in
-      DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
+      let domain_name = Domain_name.of_string redirect in
+      let domain_name = Stdlib.Result.get_ok domain_name in
+      let* response = request Dns.Rr_map.Txt domain_name in
+      match response with
       | Error (`No_domain _ | `No_data _) ->
-          go ~ctx ~limit:(succ limit) state dns (module DNS) ~modifiers []
-      | Error (`Msg _err) -> return `Temperror
+          go ctx ~limit:(succ limit) ~modifiers []
+      | Error (`Msg _err) -> terminate Result.temperror
       | Ok (_, txts) ->
+          let txts = Dns.Rr_map.Txt_set.elements txts in
+          let* terms =
+            match select_spf1 txts with
+            | Some terms -> return terms
+            | None -> terminate Result.permerror in
+          let* terms =
+            match Term.parse_record terms with
+            | Ok terms -> return terms
+            | Error _ -> terminate Result.permerror in
+          let empty = { Record.mechanisms= []; modifiers= [] } in
+          let record = List.fold_left (Record.fold ctx) empty terms in
+          let record = { record with mechanisms= List.rev record.mechanisms } in
+          let record = { record with modifiers= List.rev record.modifiers } in
+          let ctx' = Map.add Map.K.domain domain_name ctx in
+          let fn () =
+            go ctx' ~limit ~modifiers:record.modifiers record.mechanisms in
+          let neutral () = go ctx ~limit:(succ limit) ~modifiers [] in
+          choose_on fn ~neutral)
+
+(*
       match
         let ( >>= ) x f = Result.bind x f in
         select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
@@ -994,7 +939,7 @@ let rec do_redirect :
           return `Permerror
       | Ok terms -> (
           let record =
-            List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
+            List.fold_left (fold ctx)  terms
           in
           let record =
             {
@@ -1009,27 +954,37 @@ let rec do_redirect :
           | `Neutral ->
               go ~ctx ~limit:(succ limit) state dns (module DNS) ~modifiers []
           | result -> return result))
+*)
 
-and include_mechanism :
-    type t dns.
-    ctx:ctx ->
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    qualifier ->
-    'a Domain_name.t ->
-    ([ `Continue | res ], t) io =
- fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) q domain_name ->
-  let ( >>= ) = bind in
+and include_mechanism ctx ~limit q domain_name =
   let ctx = Map.add Map.K.domain domain_name ctx in
-  DNS.getrrecord dns Dns.Rr_map.Txt domain_name >>= function
-  | Error (`Msg _) -> return `Temperror
-  | Error (`No_domain _ | `No_data _) -> return `Permerror
+  let* response = request Dns.Rr_map.Txt domain_name in
+  match response with
+  | Error (`Msg _) -> terminate Result.temperror
+  | Error (`No_domain _ | `No_data _) -> terminate Result.permerror
   | Ok (_, txts) ->
+      let txts = Dns.Rr_map.Txt_set.elements txts in
+      let* terms =
+        match select_spf1 txts with
+        | Some terms -> return terms
+        | None -> terminate Result.permerror in
+      let* terms =
+        match Term.parse_record terms with
+        | Ok terms -> return terms
+        | Error _ -> terminate Result.permerror in
+      let empty = { Record.mechanisms= []; modifiers= [] } in
+      let record = List.fold_left (Record.fold ctx) empty terms in
+      let record = { record with mechanisms= List.rev record.mechanisms } in
+      let record = { record with modifiers= List.rev record.modifiers } in
+      let permerror () = terminate Result.permerror in
+      let pass mechanism = of_qualifier ~mechanism q true in
+      let fn () = check ctx ~limit:(succ limit) record in
+      choose_on fn ~permerror ~none:permerror ~pass
+
+(*
   match
     let ( >>= ) x f = Result.bind x f in
-    select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
+    select_spf1  >>= Term.parse_record
   with
   | Error `None | Error (`Msg _) -> return `Permerror
   | Ok terms -> (
@@ -1047,113 +1002,84 @@ and include_mechanism :
       | `Temperror -> return `Temperror
       | `Pass mechanism -> return (of_qualifier ~mechanism q true)
       | `Fail | `Softfail | `Neutral -> return `Continue)
+*)
 
-and apply :
-    type t dns.
-    ctx:ctx ->
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    qualifier * mechanism ->
-    ([ `Continue | res ], t) io =
- fun ~ctx ~limit ({ return; _ } as state) dns (module DNS) (q, mechanism) ->
+and apply ctx ~limit (q, mechanism) =
   match mechanism with
-  | All -> return (of_qualifier ~mechanism q true)
+  | All -> of_qualifier ~mechanism q true
   | A (Some domain_name, cidr_ipv4, cidr_ipv6) ->
       Log.debug (fun m ->
           m "Apply A mechanism with %a." Domain_name.pp domain_name) ;
-      a_mechanism ~ctx ~limit state dns
-        (module DNS)
-        q domain_name (cidr_ipv4, cidr_ipv6)
+      a_mechanism ctx ~limit q domain_name (cidr_ipv4, cidr_ipv6)
   | A (None, cidr_ipv4, cidr_ipv6) ->
       let domain_name = Map.get Map.K.domain ctx in
       Log.debug (fun m ->
           m "Apply A mechanism with no domain, using %a." Domain_name.pp
             domain_name) ;
-      a_mechanism ~ctx ~limit state dns
-        (module DNS)
-        q domain_name (cidr_ipv4, cidr_ipv6)
+      a_mechanism ctx ~limit q domain_name (cidr_ipv4, cidr_ipv6)
   | Mx (Some domain_name, cidr_ipv4, cidr_ipv6) ->
       Log.debug (fun m ->
           m "Apply MX mechanism with %a." Domain_name.pp domain_name) ;
-      mx_mechanism ~ctx ~limit state dns
-        (module DNS)
-        q domain_name (cidr_ipv4, cidr_ipv6)
+      mx_mechanism ctx ~limit q domain_name (cidr_ipv4, cidr_ipv6)
   | Mx (None, cidr_ipv4, cidr_ipv6) ->
       let domain_name = Map.get Map.K.domain ctx in
       Log.debug (fun m ->
           m "Apply MX mechanism with no domain, using %a." Domain_name.pp
             domain_name) ;
-      mx_mechanism ~ctx ~limit state dns
-        (module DNS)
-        q domain_name (cidr_ipv4, cidr_ipv6)
+      mx_mechanism ctx ~limit q domain_name (cidr_ipv4, cidr_ipv6)
   | Include domain_name ->
       Log.debug (fun m ->
           m "Apply INCLUDE mechanism with %a." Domain_name.pp domain_name) ;
-      include_mechanism ~ctx ~limit state dns (module DNS) q domain_name
+      include_mechanism ctx ~limit q domain_name
   | V4 v4 ->
       Log.debug (fun m ->
           m "Apply IPv4 mechanism with %a." Ipaddr.V4.Prefix.pp v4) ;
-      return
-        (of_qualifier ~mechanism q
-           (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V4 v4)))
+      let exists = Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V4 v4) in
+      of_qualifier ~mechanism q exists
   | V6 v6 ->
       Log.debug (fun m ->
           m "Apply IPv6 mechanism with %a." Ipaddr.V6.Prefix.pp v6) ;
-      return
-        (of_qualifier ~mechanism q
-           (Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6)))
-  | Exists domain_name ->
-      exists_mechanism ~ctx ~limit state dns (module DNS) q domain_name
-  | Ptr _ -> return `Continue
+      let exists = Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6) in
+      of_qualifier ~mechanism q exists
+  | Exists domain_name -> exists_mechanism ctx ~limit q domain_name
+  | Ptr _ -> return ()
 (* See RFC 7802, Appendix B. *)
 
-and check :
-    type t dns.
-    ctx:ctx ->
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    record ->
-    (res, t) io =
- fun ~ctx ~limit state dns (module DNS) record ->
-  go ~ctx ~limit state dns
-    (module DNS)
-    ~modifiers:record.modifiers record.mechanisms
+and check ctx ~limit record =
+  go ctx ~limit ~modifiers:record.modifiers record.mechanisms
 
-and go :
-    type t dns.
-    ctx:ctx ->
-    limit:int ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    modifiers:modifier Lazy.t list ->
-    (qualifier * mechanism) list ->
-    (res, t) io =
- fun ~ctx ~limit ({ bind; return } as state) dns (module DNS) ~modifiers ->
-   function
-  | [] -> do_redirect ~ctx ~limit state dns (module DNS) ~modifiers
-  | (q, mechanism) :: r when limit < 10 -> (
-      let ( >>= ) = bind in
-      apply ~ctx ~limit state dns (module DNS) (q, mechanism) >>= function
-      | `Continue -> go ~ctx ~limit state dns (module DNS) ~modifiers r
-      | #res as res -> return res)
-  | _ -> return `Permerror
+and go ctx ~limit ~modifiers = function
+  | [] -> do_redirect ctx ~limit ~modifiers
+  | (q, mechanism) :: rest when limit < 10 ->
+      let* () = apply ctx ~limit (q, mechanism) in
+      go ctx ~limit ~modifiers rest
+  | _ -> terminate Result.permerror
 
-let check :
-    type t dns.
-    ctx:ctx ->
-    t state ->
-    dns ->
-    (module DNS with type t = dns and type backend = t) ->
-    [ res | `Record of record ] ->
-    (res, t) io =
- fun ~ctx ({ return; _ } as state) dns (module DNS) -> function
-  | #res as res -> return res
-  | `Record record -> check ~ctx ~limit:0 state dns (module DNS) record
+let check ctx record = check ctx ~limit:0 record
+
+let get_and_check ctx =
+  match Map.find Map.K.domain ctx with
+  | None -> failwith "Missing domain-name into the given context"
+  | Some domain_name -> (
+      let* response = request Dns.Rr_map.Txt domain_name in
+      match response with
+      | Error (`No_domain _ | `No_data _) -> terminate Result.none
+      | Error (`Msg _err) -> terminate Result.temperror
+      | Ok (_, txts) ->
+          let txts = Dns.Rr_map.Txt_set.elements txts in
+          let* txts =
+            match select_spf1 txts with
+            | None -> terminate Result.none
+            | Some txts -> return txts in
+          let* terms =
+            match Term.parse_record txts with
+            | Ok terms -> return terms
+            | Error _ -> terminate Result.permerror in
+          let empty = { Record.mechanisms= []; modifiers= [] } in
+          let record = List.fold_left (Record.fold ctx) empty terms in
+          let record = { record with mechanisms= List.rev record.mechanisms } in
+          let record = { record with modifiers= List.rev record.modifiers } in
+          check ctx record)
 
 module Encoder = struct
   open Prettym
@@ -1169,8 +1095,8 @@ module Encoder = struct
 
   let to_safe_string pp v = Fmt.str "%a" pp v (* TODO *)
 
-  let kv :
-      type a v. name:string -> a Map.key -> ?pp:a Fmt.t -> Map.t -> (v, v) fmt =
+  let kv : type a v.
+      name:string -> a Map.key -> ?pp:a Fmt.t -> Map.t -> (v, v) fmt =
    fun ~name key ?pp ctx ->
     match Map.find key ctx with
     | None -> [ cut ]
@@ -1178,14 +1104,8 @@ module Encoder = struct
         let pp =
           match pp with Some pp -> pp | None -> (Map.Key.info key).Map.pp in
         [
-          spaces 1;
-          string $ name;
-          cut;
-          char $ '=';
-          cut;
-          string $ to_safe_string pp v;
-          cut;
-          char $ ';';
+          spaces 1; string $ name; cut; char $ '='; cut
+        ; string $ to_safe_string pp v; cut; char $ ';'
         ]
 
   let ( ^^ ) a b = concat a b
@@ -1208,63 +1128,28 @@ module Encoder = struct
 
   let ipaddr ppf v = eval ppf [ !!string ] (Ipaddr.to_string v)
 
-  let comment ~ctx ?receiver ppf (v : res) =
+  let comment ~ctx ?receiver ppf (v : Result.t) =
     match (receiver, Map.get Map.K.sender ctx, v) with
     | None, _, _ -> ppf
     | Some receiver, `MAILFROM p, `Pass _ ->
         eval ppf
           [
-            spaces 1;
-            char $ '(';
-            !!domain_name;
-            char $ ':';
-            spaces 1;
-            string $ "domain";
-            spaces 1;
-            string $ "of";
-            spaces 1;
-            !!sender;
-            spaces 1;
-            string $ "designates";
-            spaces 1;
-            !!ipaddr;
-            spaces 1;
-            string $ "as";
-            spaces 1;
-            string $ "permitted";
-            spaces 1;
-            string $ "sender";
-            char $ ')';
+            spaces 1; char $ '('; !!domain_name; char $ ':'; spaces 1
+          ; string $ "domain"; spaces 1; string $ "of"; spaces 1; !!sender
+          ; spaces 1; string $ "designates"; spaces 1; !!ipaddr; spaces 1
+          ; string $ "as"; spaces 1; string $ "permitted"; spaces 1
+          ; string $ "sender"; char $ ')'
           ]
           receiver p (Map.get Map.K.ip ctx)
     | Some receiver, `MAILFROM p, _ ->
         eval ppf
           [
-            spaces 1;
-            char $ '(';
-            !!domain_name;
-            char $ ':';
-            spaces 1;
-            string $ "domain";
-            spaces 1;
-            string $ "of";
-            spaces 1;
-            !!sender;
-            spaces 1;
-            string $ "does";
-            spaces 1;
-            string $ "not";
-            spaces 1;
-            string $ "designates";
-            spaces 1;
-            !!ipaddr;
-            spaces 1;
-            string $ "as";
-            spaces 1;
-            string $ "permitted";
-            spaces 1;
-            string $ "sender";
-            char $ ')';
+            spaces 1; char $ '('; !!domain_name; char $ ':'; spaces 1
+          ; string $ "domain"; spaces 1; string $ "of"; spaces 1; !!sender
+          ; spaces 1; string $ "does"; spaces 1; string $ "not"; spaces 1
+          ; string $ "designates"; spaces 1; !!ipaddr; spaces 1; string $ "as"
+          ; spaces 1; string $ "permitted"; spaces 1; string $ "sender"
+          ; char $ ')'
           ]
           receiver p (Map.get Map.K.ip ctx)
     | Some _, `HELO _, _ -> ppf
@@ -1280,26 +1165,15 @@ module Encoder = struct
          | None -> [ cut ]
          | Some receiver ->
              [
-               spaces 1;
-               string $ "receiver";
-               cut;
-               char $ '=';
-               cut;
-               string $ Fmt.to_to_string Emile.pp_domain receiver;
-               cut;
-               char $ ';';
+               spaces 1; string $ "receiver"; cut; char $ '='; cut
+             ; string $ Fmt.to_to_string Emile.pp_domain receiver; cut
+             ; char $ ';'
              ])
       ^^ (match v with
          | `Pass m ->
              [
-               spaces 1;
-               string $ "mechanism";
-               cut;
-               char $ '=';
-               cut;
-               string $ to_safe_string pp_mechanism m;
-               cut;
-               char $ ';';
+               spaces 1; string $ "mechanism"; cut; char $ '='; cut
+             ; string $ to_safe_string Record.pp_mechanism m; cut; char $ ';'
              ]
          | _ -> [ cut ])
       ^^ [ close; new_line ])
@@ -1308,13 +1182,11 @@ end
 
 let field_received_spf = Mrmime.Field_name.v "Received-SPF"
 
-type newline = LF | CRLF
-
 let to_field :
-    ctx:ctx ->
-    ?receiver:Emile.domain ->
-    res ->
-    Mrmime.Field_name.t * Unstrctrd.t =
+       ctx:ctx
+    -> ?receiver:Emile.domain
+    -> Result.t
+    -> Mrmime.Field_name.t * Unstrctrd.t =
  fun ~ctx ?receiver res ->
   let v = Prettym.to_string (Encoder.field ~ctx ?receiver) res in
   let _, v =
@@ -1330,34 +1202,28 @@ module Decoder = struct
   let result =
     choice
       [
-        (string "pass" >>| fun _ -> `Pass);
-        (string "fail" >>| fun _ -> `Fail);
-        (string "softfail" >>| fun _ -> `Softfail);
-        (string "neutral" >>| fun _ -> `Neutral);
-        (string "none" >>| fun _ -> `None);
-        (string "temperror" >>| fun _ -> `Temperror);
-        (string "permerror" >>| fun _ -> `Permerror);
+        (string "pass" >>| fun _ -> `Pass); (string "fail" >>| fun _ -> `Fail)
+      ; (string "softfail" >>| fun _ -> `Softfail)
+      ; (string "neutral" >>| fun _ -> `Neutral)
+      ; (string "none" >>| fun _ -> `None)
+      ; (string "temperror" >>| fun _ -> `Temperror)
+      ; (string "permerror" >>| fun _ -> `Permerror)
       ]
 
   let key =
     let name =
       satisfy is_alpha >>= fun x ->
-      (take_while @@ function
-       | 'a' .. 'z' | 'A' .. 'Z' -> true
-       | '0' .. '9' -> true
-       | '-' | '_' | '.' -> true
-       | _ -> false)
+      ( take_while @@ function
+        | 'a' .. 'z' | 'A' .. 'Z' -> true
+        | '0' .. '9' -> true
+        | '-' | '_' | '.' -> true
+        | _ -> false )
       >>= fun r -> return (String.make 1 x ^ r) in
     choice
       [
-        string "client-ip";
-        string "envelope-from";
-        string "helo";
-        string "problem";
-        string "receiver";
-        string "identity";
-        string "mechanism";
-        name;
+        string "client-ip"; string "envelope-from"; string "helo"
+      ; string "problem"; string "receiver"; string "identity"
+      ; string "mechanism"; name
       ]
 
   (* XXX(dinosaure): [dot-atom] and [quoted-string] are specified by RFC 5322
@@ -1461,42 +1327,6 @@ module Decoder = struct
     | Error _ -> error_msgf "Invalid Received-SPF value: %S" str
 end
 
-let sub_string_and_replace_newline chunk len =
-  let count = ref 0 in
-  String.iter
-    (function '\n' -> incr count | _ -> ())
-    (Bytes.sub_string chunk 0 len) ;
-  let plus = !count in
-  let pos = ref 0 in
-  let res = Bytes.create (len + plus) in
-  for i = 0 to len - 1 do
-    match Bytes.unsafe_get chunk i with
-    | '\n' ->
-        Bytes.unsafe_set res !pos '\r' ;
-        Bytes.unsafe_set res (!pos + 1) '\n' ;
-        pos := !pos + 2
-    | chr ->
-        Bytes.unsafe_set res !pos chr ;
-        incr pos
-  done ;
-  Bytes.unsafe_to_string res
-
-let sanitize_input newline chunk len =
-  match newline with
-  | CRLF -> Bytes.sub_string chunk 0 len
-  | LF -> sub_string_and_replace_newline chunk len
-
-type extracted = spf list
-
-and spf = {
-  result :
-    [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ];
-  receiver : Emile.domain option;
-  sender : Emile.mailbox option;
-  ip : Ipaddr.t option;
-  ctx : ctx;
-}
-
 let pp_result ppf = function
   | `None -> Fmt.string ppf "none"
   | `Neutral -> Fmt.string ppf "neutral"
@@ -1505,18 +1335,6 @@ let pp_result ppf = function
   | `Softfail -> Fmt.string ppf "softfail"
   | `Temperror -> Fmt.string ppf "temperror"
   | `Permerror -> Fmt.string ppf "permerror"
-
-let pp_spf ppf spf =
-  Fmt.pf ppf
-    "{ @[<hov>result= %a;@ receiver= @[<hov>%a@];@ sender= @[<hov>%a@];@ ip= \
-     @[<hov>%a@];@ ctx= #ctx;@] }"
-    pp_result spf.result
-    Fmt.(Dump.option Emile.pp_domain)
-    spf.receiver
-    Fmt.(Dump.option Emile.pp_mailbox)
-    spf.sender
-    Fmt.(Dump.option Ipaddr.pp)
-    spf.ip
 
 let to_unstrctrd unstructured =
   let fold acc = function #Unstrctrd.elt as elt -> elt :: acc | _ -> acc in
@@ -1534,7 +1352,7 @@ let ctx_of_kvs kvs =
   let receiver =
     Option.bind
       (List.assoc_opt "receiver" kvs)
-      (Result.to_option <.> Colombe.Domain.of_string) in
+      (Stdlib.Result.to_option % Colombe.Domain.of_string) in
   let fold ctx = function
     | "client-ip", v -> (
         match Ipaddr.of_string v with
@@ -1590,66 +1408,9 @@ let to_mailbox { Colombe.Path.local; domain; _ } =
     | `Dot_string vs -> List.map (fun v -> `Atom v) vs
     | `String v -> [ `String v ] in
   let domain = colombe_domain_to_emile_domain domain in
-  { Emile.local; domain = (domain, []); name = None }
+  { Emile.local; domain= (domain, []); name= None }
 
-let to_spf = function
-  | result, Some ((receiver' : Emile.domain), sender', ip'), kvs ->
-      let p' = failwith_error_msg (Colombe_emile.to_path sender') in
-      let identity, receiver, ctx = ctx_of_kvs kvs in
-      let receiver =
-        Option.value ~default:receiver'
-          (Option.map colombe_domain_to_emile_domain receiver) in
-      let ctx, ip =
-        match Map.find Map.K.ip ctx with
-        | Some ip -> (ctx, ip)
-        | None -> (Map.add Map.K.ip ip' ctx, ip') in
-      let ctx, sender =
-        match (Map.find Map.K.sender ctx, identity) with
-        | Some (`HELO _), Some `MAILFROM ->
-            assert false (* XXX(dinosaure): I'm correct? *)
-        | Some (`HELO _), (Some `HELO | None) -> (ctx, to_mailbox p')
-        | Some (`MAILFROM p), _ -> (ctx, to_mailbox p)
-        | None, (Some `MAILFROM | None) ->
-            let { Colombe.Path.local; domain; _ } = p' in
-            let ctx = Map.add Map.K.sender (`MAILFROM p') ctx in
-            let ctx = Map.add Map.K.local local ctx in
-            let ctx = Map.add Map.K.domain_of_sender domain ctx in
-            let ctx =
-              match (domain, Map.find Map.K.domain ctx) with
-              | Colombe.Domain.Domain vs, None ->
-                  Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx
-              | _ -> ctx in
-            (ctx, to_mailbox p')
-        | None, Some `HELO ->
-            let { Colombe.Path.local; domain; _ } = p' in
-            let ctx = Map.add Map.K.local local ctx in
-            let ctx = Map.add Map.K.domain_of_sender domain ctx in
-            let ctx =
-              match (domain, Map.find Map.K.domain ctx) with
-              | Colombe.Domain.Domain vs, None ->
-                  let v = Domain_name.of_strings_exn vs in
-                  Map.add Map.K.sender (`HELO v) ctx |> Map.add Map.K.domain v
-              | Colombe.Domain.Domain vs, Some _ ->
-                  let v = Domain_name.of_strings_exn vs in
-                  Map.add Map.K.sender (`HELO v) ctx
-              | _ -> ctx in
-            (ctx, to_mailbox p') in
-      {
-        result;
-        receiver = Some receiver;
-        sender = Some sender;
-        ip = Some ip;
-        ctx;
-      }
-  | result, None, kvs ->
-      let _identity, receiver, ctx = ctx_of_kvs kvs in
-      let receiver = Option.map colombe_domain_to_emile_domain receiver in
-      let sender =
-        match Map.find Map.K.sender ctx with
-        | Some (`MAILFROM p) -> Some (to_mailbox p)
-        | _ -> None in
-      let ip = Map.find Map.K.ip ctx in
-      { result; receiver; sender; ip; ctx }
+(* *)
 
 let p =
   let open Mrmime in
@@ -1669,19 +1430,161 @@ let p =
   |> Map.add content_type unstructured
   |> Map.add content_encoding unstructured
 
-let parse_received_spf_field_value unstrctrd =
-  match Decoder.parse_received_spf_field_value unstrctrd with
-  | Ok v -> Ok (to_spf v)
-  | Error _ as err -> err
+module Extract = struct
+  type result =
+    [ `None | `Neutral | `Pass | `Fail | `Softfail | `Temperror | `Permerror ]
 
-let extract_received_spf :
-    type flow t.
-    ?newline:newline ->
-    flow ->
-    t state ->
-    (module FLOW with type flow = flow and type backend = t) ->
-    ((extracted, [> `Msg of string ]) result, t) io =
- fun ?(newline = LF) flow { bind; return } (module Flow) ->
+  type field = {
+      result: result
+    ; receiver: Emile.domain option
+    ; sender: Emile.mailbox option
+    ; ip: Ipaddr.t option
+    ; ctx: ctx
+  }
+
+  let pp ppf t =
+    Fmt.pf ppf
+      "{ @[<hov>result= %a;@ receiver= @[<hov>%a@];@ sender= @[<hov>%a@];@ ip= \
+       @[<hov>%a@];@ ctx= #ctx;@] }"
+      pp_result t.result
+      Fmt.(Dump.option Emile.pp_domain)
+      t.receiver
+      Fmt.(Dump.option Emile.pp_mailbox)
+      t.sender
+      Fmt.(Dump.option Ipaddr.pp)
+      t.ip
+
+  let to_field = function
+    | result, Some ((receiver' : Emile.domain), sender', ip'), kvs ->
+        let p' = failwith_error_msg (Colombe_emile.to_path sender') in
+        let identity, receiver, ctx = ctx_of_kvs kvs in
+        let receiver =
+          Option.value ~default:receiver'
+            (Option.map colombe_domain_to_emile_domain receiver) in
+        let ctx, ip =
+          match Map.find Map.K.ip ctx with
+          | Some ip -> (ctx, ip)
+          | None -> (Map.add Map.K.ip ip' ctx, ip') in
+        let ctx, sender =
+          match (Map.find Map.K.sender ctx, identity) with
+          | Some (`HELO _), Some `MAILFROM ->
+              assert false (* XXX(dinosaure): I'm correct? *)
+          | Some (`HELO _), (Some `HELO | None) -> (ctx, to_mailbox p')
+          | Some (`MAILFROM p), _ -> (ctx, to_mailbox p)
+          | None, (Some `MAILFROM | None) ->
+              let { Colombe.Path.local; domain; _ } = p' in
+              let ctx = Map.add Map.K.sender (`MAILFROM p') ctx in
+              let ctx = Map.add Map.K.local local ctx in
+              let ctx = Map.add Map.K.domain_of_sender domain ctx in
+              let ctx =
+                match (domain, Map.find Map.K.domain ctx) with
+                | Colombe.Domain.Domain vs, None ->
+                    Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx
+                | _ -> ctx in
+              (ctx, to_mailbox p')
+          | None, Some `HELO ->
+              let { Colombe.Path.local; domain; _ } = p' in
+              let ctx = Map.add Map.K.local local ctx in
+              let ctx = Map.add Map.K.domain_of_sender domain ctx in
+              let ctx =
+                match (domain, Map.find Map.K.domain ctx) with
+                | Colombe.Domain.Domain vs, None ->
+                    let v = Domain_name.of_strings_exn vs in
+                    Map.add Map.K.sender (`HELO v) ctx |> Map.add Map.K.domain v
+                | Colombe.Domain.Domain vs, Some _ ->
+                    let v = Domain_name.of_strings_exn vs in
+                    Map.add Map.K.sender (`HELO v) ctx
+                | _ -> ctx in
+              (ctx, to_mailbox p') in
+        {
+          result
+        ; receiver= Some receiver
+        ; sender= Some sender
+        ; ip= Some ip
+        ; ctx
+        }
+    | result, None, kvs ->
+        let _identity, receiver, ctx = ctx_of_kvs kvs in
+        let receiver = Option.map colombe_domain_to_emile_domain receiver in
+        let sender =
+          match Map.find Map.K.sender ctx with
+          | Some (`MAILFROM p) -> Some (to_mailbox p)
+          | _ -> None in
+        let ip = Map.find Map.K.ip ctx in
+        { result; receiver; sender; ip; ctx }
+
+  type state = Extraction of Mrmime.Hd.decoder * field list
+  type extract = { input: bytes; input_pos: int; input_len: int; state: state }
+
+  type decode =
+    [ `Await of extract | `Fields of field list | `Malformed of string ]
+
+  let extractor () =
+    let input, input_pos, input_len = (Bytes.empty, 1, 0) in
+    let dec = Mrmime.Hd.decoder p in
+    let state = Extraction (dec, []) in
+    { input; input_pos; input_len; state }
+
+  let src_rem t = t.input_len - t.input_pos + 1
+
+  let end_of_input extractor =
+    { extractor with input= Bytes.empty; input_pos= 0; input_len= min_int }
+
+  let src t src idx len =
+    if idx < 0 || len < 0 || idx + len > String.length src
+    then Fmt.invalid_arg "Dkim.Verify.src: source out of bounds" ;
+    let input = Bytes.unsafe_of_string src in
+    let input_pos = idx in
+    let input_len = idx + len - 1 in
+    let t = { t with input; input_pos; input_len } in
+    match t.state with
+    | Extraction (v, _) ->
+        Mrmime.Hd.src v src idx len ;
+        if len == 0 then end_of_input t else t
+
+  let parse_received_spf_field_value unstrctrd =
+    match Decoder.parse_received_spf_field_value unstrctrd with
+    | Ok v -> Ok (to_field v)
+    | Error _ as err -> err
+
+  let extract t decoder fields =
+    let open Mrmime in
+    let rec go acc =
+      match Hd.decode decoder with
+      | `Field field -> begin
+          let (Field.Field (field_name, w, v)) = Location.prj field in
+          match (Field_name.equal field_name field_received_spf, w) with
+          | true, Field.Unstructured -> begin
+              let v = to_unstrctrd v in
+              match parse_received_spf_field_value v with
+              | Ok v -> go (v :: acc)
+              | Error (`Msg _err) -> go acc
+            end
+          | _ -> go acc
+        end
+      | `Malformed _ as err -> err
+      | `End _ -> `Fields (List.rev acc)
+      | `Await ->
+          let state = Extraction (decoder, acc) in
+          let rem = src_rem t in
+          let input_pos = t.input_pos + rem in
+          let t = { t with state; input_pos } in
+          `Await t in
+    go fields
+
+  let extract t =
+    let (Extraction (decoder, fields)) = t.state in
+    extract t decoder fields
+end
+
+(*
+let extract_received_spf : type flow t.
+       ?newline:[ `LF | `CRLF ]
+    -> flow
+    -> t state
+    -> (module FLOW with type flow = flow and type backend = t)
+    -> ((extracted, [> `Msg of string ]) result, t) io =
+ fun ?(newline = `LF) flow { bind; return } (module Flow) ->
   let open Mrmime in
   let ( >>= ) = bind in
   let chunk = 0x1000 in
@@ -1710,3 +1613,21 @@ let extract_received_spf :
         Hd.src decoder raw 0 (String.length raw) ;
         go acc in
   go []
+*)
+
+let a ?cidr_v4 ?cidr_v6 domain_name = A (Some domain_name, cidr_v4, cidr_v6)
+let all = All
+let exists domain_name = Exists domain_name
+let inc domain_name = Include domain_name
+(* TODO(dinosaure): currently, [mechanism] is a **result** of the macro
+   expansion - the user can not specify by this way its own macro, he can
+   specify only a domain-name. We must provide something else than the
+   [mechanism] type which accepts macro. *)
+
+let mx ?cidr_v4 ?cidr_v6 domain_name = Mx (Some domain_name, cidr_v4, cidr_v6)
+let v4 v = V4 v
+let v6 v = V6 v
+let pass m = (Pass, m)
+let fail m = (Fail, m)
+let softfail m = (Softfail, m)
+let neutral m = (Neutral, m)

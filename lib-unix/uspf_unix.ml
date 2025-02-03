@@ -1,40 +1,50 @@
-module Unix_scheduler = Uspf.Sigs.Make (struct
-  type 'a t = 'a
-end)
+let eval : type a. dns:Dns_client_unix.t -> a Uspf.t -> Uspf.Result.t option =
+ fun ~dns t ->
+  let exception Result of Uspf.Result.t in
+  let rec go : type a. a Uspf.t -> a = function
+    | Request (domain_name, record) ->
+        Dns_client_unix.get_resource_record dns record domain_name
+    | Return v -> v
+    | Terminate result -> raise (Result result)
+    | Bind (x, fn) -> go (fn (go x))
+    | Choose_on
+        { none; neutral; pass; fail; softfail; temperror; permerror; fn } ->
+    match go (fn ()) with
+    | v -> v
+    | exception Result result ->
+        let reraise _ = raise (Result result) in
+        let fn =
+          match result with
+          | `None -> Option.fold ~none:reraise ~some:Fun.id none
+          | `Neutral -> Option.fold ~none:reraise ~some:Fun.id neutral
+          | `Fail -> Option.fold ~none:reraise ~some:Fun.id fail
+          | `Softfail -> Option.fold ~none:reraise ~some:Fun.id softfail
+          | `Temperror -> Option.fold ~none:reraise ~some:Fun.id temperror
+          | `Permerror -> Option.fold ~none:reraise ~some:Fun.id permerror
+          | `Pass m ->
+              let fn () =
+                match pass with Some pass -> pass m | None -> reraise () in
+              fn in
+        go (fn ()) in
+  match go t with exception Result result -> Some result | _ -> None
 
-let state =
-  let open Uspf.Sigs in
-  let open Unix_scheduler in
-  { return = (fun x -> inj x); bind = (fun x f -> f (prj x)) }
+let get_and_check dns ctx = eval ~dns (Uspf.get_and_check ctx)
 
-module DNS = struct
-  type t = Dns_client_unix.t
-  and backend = Unix_scheduler.t
-
-  and error =
-    [ `Msg of string
-    | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
-    | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
-
-  let getrrecord dns response domain_name =
-    Unix_scheduler.inj
-    @@ Dns_client_unix.get_resource_record dns response domain_name
-end
-
-module Flow = struct
-  type flow = in_channel
-  and backend = Unix_scheduler.t
-
-  let input ic tmp off len = Unix_scheduler.inj @@ input ic tmp off len
-end
-
-let ( >>| ) x f = Result.map f x
-
-let check ?nameservers ~timeout ctx =
-  let dns = Dns_client_unix.create ?nameservers ~timeout () in
-  Uspf.get ~ctx state dns (module DNS) |> Unix_scheduler.prj >>| fun record ->
-  Uspf.check ~ctx state dns (module DNS) record |> Unix_scheduler.prj
-
-let extract_received_spf ?newline ic =
-  Uspf.extract_received_spf ?newline ic state (module Flow)
-  |> Unix_scheduler.prj
+let extract_received_spf ?(newline = `LF) ic =
+  let buf = Bytes.create 0x7ff in
+  let rec go extract =
+    match Uspf.Extract.extract extract with
+    | `Fields fields -> Ok fields
+    | `Malformed _ -> Error (`Msg "Invalid email")
+    | `Await extract ->
+    match input ic buf 0 (Bytes.length buf) with
+    | 0 -> go (Uspf.Extract.src extract "" 0 0)
+    | len when newline = `CRLF ->
+        go (Uspf.Extract.src extract (Bytes.sub_string buf 0 len) 0 len)
+    | len ->
+        let str = Bytes.sub_string buf 0 len in
+        let str = String.split_on_char '\n' str in
+        let str = String.concat "\r\n" str in
+        let len = String.length str in
+        go (Uspf.Extract.src extract str 0 len) in
+  go (Uspf.Extract.extractor ())
