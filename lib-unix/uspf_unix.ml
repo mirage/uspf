@@ -38,7 +38,7 @@ let extract_received_spf ?(newline = `LF) ic =
     | `Malformed _ -> Error (`Msg "Invalid email")
     | `Await extract ->
     match input ic buf 0 (Bytes.length buf) with
-    | 0 -> go (Uspf.Extract.src extract String.empty 0 0)
+    | 0 -> go (Uspf.Extract.src extract "" 0 0)
     | len when newline = `CRLF ->
         go (Uspf.Extract.src extract (Bytes.sub_string buf 0 len) 0 len)
     | len ->
