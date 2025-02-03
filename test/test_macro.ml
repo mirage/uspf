@@ -1,7 +1,7 @@
 open Rresult
 
 let msg = Alcotest.testable Rresult.R.pp_msg ( = )
-let ( <.> ) f g x = f (g x)
+let ( % ) f g x = f (g x)
 
 let test01 =
   Alcotest.test_case "rfc7208" `Quick @@ fun () ->
@@ -10,7 +10,7 @@ let test01 =
     |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "mx.example.org"))
     |> Uspf.with_sender
          (`MAILFROM
-           (Colombe.Path.of_string_exn "<strong-bad@email.example.com>")) in
+            (Colombe.Path.of_string_exn "<strong-bad@email.example.com>")) in
   Alcotest.(check (result string msg))
     "01"
     (Uspf.Macro.expand_string ctx "%{s}" >>| Domain_name.to_string)
@@ -76,7 +76,7 @@ let test02 =
     |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "mx.example.org"))
     |> Uspf.with_sender
          (`MAILFROM
-           (Colombe.Path.of_string_exn "<strong-bad@email.example.com>")) in
+            (Colombe.Path.of_string_exn "<strong-bad@email.example.com>")) in
   Alcotest.(check (result string msg))
     "01"
     (Uspf.Macro.expand_string ctx "%{ir}.%{v}._spf.%{d2}"
@@ -126,76 +126,78 @@ let test04 =
   let ipv4_1 =
     Uspf.(pass @@ v4 (Ipaddr.V4.Prefix.of_string_exn "10.0.0.0/24")) in
   let reject = Uspf.(fail all) in
-  let record = Uspf.record [ ipv4_0; ipv4_1; reject ] [] in
-  let str = Uspf.record_to_string record in
+  let record = Uspf.Record.v [ ipv4_0; ipv4_1; reject ] [] in
+  let str = Uspf.Record.to_string record in
   Alcotest.(check string) "record" str "ip4:192.168.0.0/24 ip4:10.0.0.0/24 -all"
+
+type getrrecord = {
+    fn: 'a 'r. 'a Domain_name.t -> 'r Dns.Rr_map.key -> 'r Uspf.response
+}
+
+let eval : type a. getrrecord:getrrecord -> a Uspf.t -> Uspf.Result.t option =
+ fun ~getrrecord t ->
+  let exception Result of Uspf.Result.t in
+  let rec go : type a. a Uspf.t -> a = function
+    | Request (domain_name, record) -> getrrecord.fn domain_name record
+    | Return v -> v
+    | Terminate result -> raise (Result result)
+    | Bind (x, fn) -> go (fn (go x))
+    | Choose_on
+        { none; neutral; pass; fail; softfail; temperror; permerror; fn } ->
+    match go (fn ()) with
+    | v -> v
+    | exception Result result ->
+        let reraise _ = raise (Result result) in
+        let fn =
+          match result with
+          | `None -> Option.fold ~none:reraise ~some:Fun.id none
+          | `Neutral -> Option.fold ~none:reraise ~some:Fun.id neutral
+          | `Fail -> Option.fold ~none:reraise ~some:Fun.id fail
+          | `Softfail -> Option.fold ~none:reraise ~some:Fun.id softfail
+          | `Temperror -> Option.fold ~none:reraise ~some:Fun.id temperror
+          | `Permerror -> Option.fold ~none:reraise ~some:Fun.id permerror
+          | `Pass m ->
+              let fn () =
+                match pass with Some pass -> pass m | None -> reraise () in
+              fn in
+        go (fn ()) in
+  match go t with exception Result result -> Some result | _ -> None
 
 let test05 =
   Alcotest.test_case "mx optional domain name" `Quick @@ fun () ->
-  let module Caml = Uspf.Sigs.Make (struct
-    type 'a t = 'a
-  end) in
-  let state =
-    {
-      Uspf.Sigs.bind = (fun x f -> f (Caml.prj x));
-      Uspf.Sigs.return = Caml.inj;
-    } in
-  let module DNS = struct
-    type backend = Caml.t
-    type t = unit
-
-    type error =
-      [ `Msg of string
-      | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
-      | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
-
-    let getrrecord :
-        type a.
-        t ->
-        a Dns.Rr_map.rr ->
-        _ Domain_name.t ->
-        ((a, [> error ]) result, backend) Uspf.Sigs.io =
-     fun () rr domain_name ->
-      let _192_168_1_1 =
-        Ipaddr.V4.(Set.singleton (of_string_exn "192.168.1.1")) in
-      let mxs =
-        Dns.Rr_map.Mx_set.singleton
-          {
-            Dns.Mx.preference = 10;
-            mail_exchange =
-              Domain_name.(host_exn (of_string_exn "mail.bar.com"));
-          } in
-      Fmt.pr ">>> Ask for %a:%a.\n%!" Dns.Rr_map.ppk (Dns.Rr_map.K rr)
-        Domain_name.pp domain_name ;
-      match (rr, Domain_name.to_string domain_name) with
-      | Dns.Rr_map.Txt, "bar.com" ->
-          Caml.inj
-            (Ok (0l, Dns.Rr_map.Txt_set.singleton "v=spf1 mx a:foo.com -all"))
-      | Dns.Rr_map.A, "mail.bar.com" -> Caml.inj (Ok (0l, _192_168_1_1))
-      | Dns.Rr_map.Mx, "bar.com" -> Caml.inj (Ok (0l, mxs))
-      | _ ->
-          Caml.inj
-            (R.error_msgf "Error on %a:%a." Dns.Rr_map.ppk (Dns.Rr_map.K rr)
-               Domain_name.pp domain_name)
-  end in
+  let getrrecord : type a r.
+      a Domain_name.t -> r Dns.Rr_map.key -> r Uspf.response =
+   fun domain_name record ->
+    let _192_168_1_1 = Ipaddr.V4.(Set.singleton (of_string_exn "192.168.1.1")) in
+    let mxs =
+      Dns.Rr_map.Mx_set.singleton
+        {
+          Dns.Mx.preference= 10
+        ; mail_exchange= Domain_name.(host_exn (of_string_exn "mail.bar.com"))
+        } in
+    match (record, Domain_name.to_string domain_name) with
+    | Dns.Rr_map.Txt, "bar.com" ->
+        Ok (0l, Dns.Rr_map.Txt_set.singleton "v=spf1 mx a:foo.com -all")
+    | Dns.Rr_map.A, "mail.bar.com" -> Ok (0l, _192_168_1_1)
+    | Dns.Rr_map.Mx, "bar.com" -> Ok (0l, mxs)
+    | _ ->
+        R.error_msgf "Error on %a:%a." Dns.Rr_map.ppk (Dns.Rr_map.K record)
+          Domain_name.pp domain_name in
+  let getrrecord = { fn= getrrecord } in
   let ctx =
     Uspf.empty
     |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
     |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
     |> Uspf.with_ip (Ipaddr.of_string_exn "192.168.1.1") in
-  match
-    Uspf.get ~ctx state () (module DNS)
-    |> Caml.prj
-    >>| (Caml.prj <.> Uspf.check ~ctx state () (module DNS))
-  with
-  | Ok (`Pass _) -> Alcotest.(check pass) "spf" () ()
-  | Ok res -> Alcotest.failf "Invalid SPF result: %a." Uspf.pp_res res
-  | Error (`Msg err) -> Alcotest.failf "%s." err
+  let result = eval ~getrrecord (Uspf.get_and_check ctx) in
+  match result with
+  | Some (`Pass _) -> Alcotest.(check pass) "spf" () ()
+  | Some _result -> Alcotest.failf "Invalid SPF result"
+  | None -> Alcotest.failf "Impossible to compute a result"
 
 let () =
   Alcotest.run "decoding"
     [
-      ("macro", [ test01; test02 ]);
-      ("record", [ test03; test04 ]);
-      ("spf", [ test05 ]);
+      ("macro", [ test01; test02 ]); ("record", [ test03; test04 ])
+    ; ("spf", [ test05 ])
     ]

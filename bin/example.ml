@@ -21,9 +21,7 @@ let ctx1 =
 
 let reporter ppf =
   let report src level ~over k msgf =
-    let k _ =
-      over () ;
-      k () in
+    let k _ = over () ; k () in
     let with_metadata header _tags k ppf fmt =
       Format.kfprintf k ppf
         ("%a[%a]: " ^^ fmt ^^ "\n%!")
@@ -34,27 +32,30 @@ let reporter ppf =
   { Logs.report }
 
 let sigpipe = 13
-let () = Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna)
+let () = Mirage_crypto_rng_unix.use_default ()
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stdout)
-let () = Logs.set_level ~all:true (Some Logs.Debug)
+(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
+
+let dns = Dns_client_unix.create ()
 
 let () =
-  match Uspf_unix.check ~timeout:5_000_000_000L ctx0 with
-  | Ok res ->
+  match Uspf_unix.get_and_check dns ctx0 with
+  | Some res ->
       let field_name, v = Uspf.to_field ~ctx:ctx0 ~receiver res in
       Fmt.pr "%a: %s\n%!" Mrmime.Field_name.pp field_name
         (Unstrctrd.to_utf_8_string v)
-  | Error (`Msg err) -> Fmt.epr "[ERR]: %s.\n%!" err
+  | None -> Fmt.epr "[ERR]\n%!"
 
 let () =
-  match Uspf_unix.check ~timeout:5_000_000_000L ctx1 with
-  | Ok res ->
+  match Uspf_unix.get_and_check dns ctx1 with
+  | Some res ->
       let field_name, v = Uspf.to_field ~ctx:ctx1 ~receiver res in
       Fmt.pr "%a: %s\n%!" Mrmime.Field_name.pp field_name
         (Unstrctrd.to_utf_8_string v)
-  | Error (`Msg err) -> Fmt.epr "[ERR]: %s.\n%!" err
+  | None -> Fmt.epr "[ERR]\n%!"
 
+(*
 let pp_result ppf = function
   | `None -> Fmt.string ppf "none"
   | `Neutral -> Fmt.string ppf "neutral"
@@ -80,3 +81,4 @@ let () =
         | Error (`Msg err) -> Fmt.epr "[ERR]: %s.\n%!" err in
       List.iter check received_spf
   | Error (`Msg err) -> Fmt.epr "[ERR]: %s.\n%!" err
+*)

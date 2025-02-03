@@ -1,7 +1,7 @@
-type 'a tag = { name : string; pp : 'a Fmt.t }
+type 'a tag = { name: string; pp: 'a Fmt.t }
 
 module Info = struct
-  type 'a t = 'a tag = { name : string; pp : 'a Fmt.t }
+  type 'a t = 'a tag = { name: string; pp: 'a Fmt.t }
 end
 
 include Hmap.Make (Info)
@@ -48,33 +48,33 @@ module K = struct
             ((h lsr 8) land 0xf)
             ((h lsr 4) land 0xf)
             (h land 0xf) in
-    Key.create { name = "<ip>"; pp }
+    Key.create { name= "<ip>"; pp }
 
   let domain : [ `raw ] Domain_name.t key =
-    Key.create { name = "<domain>"; pp = Domain_name.pp }
+    Key.create { name= "<domain>"; pp= Domain_name.pp }
 
   let sender :
       [ `HELO of [ `raw ] Domain_name.t | `MAILFROM of Colombe.Path.t ] key =
     let pp ppf = function
       | `HELO v -> Domain_name.pp ppf v
       | `MAILFROM v -> pp_path ppf v in
-    Key.create { name = "<sender>"; pp }
+    Key.create { name= "<sender>"; pp }
 
   let local : [ `String of string | `Dot_string of string list ] key =
     let pp ppf = function
       | `String v -> Fmt.string ppf v
       | `Dot_string vs -> Fmt.(list ~sep:(const string ".") string) ppf vs in
-    Key.create { name = "local-part"; pp }
+    Key.create { name= "local-part"; pp }
 
   let domain_of_sender : Colombe.Domain.t key =
-    Key.create { name = "domain-of-sender"; pp = Colombe.Domain.pp }
+    Key.create { name= "domain-of-sender"; pp= Colombe.Domain.pp }
 
   let v : [ `In_addr | `Ip6 ] key =
     let pp ppf = function
       | `In_addr -> Fmt.string ppf "in-addr"
       | `Ip6 -> Fmt.string ppf "ip6" in
-    Key.create { name = "v"; pp }
+    Key.create { name= "v"; pp }
 
   let helo : Colombe.Domain.t key =
-    Key.create { name = "helo"; pp = Colombe.Domain.pp }
+    Key.create { name= "helo"; pp= Colombe.Domain.pp }
 end
