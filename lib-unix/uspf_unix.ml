@@ -1,32 +1,30 @@
 let eval : type a. dns:Dns_client_unix.t -> a Uspf.t -> Uspf.Result.t option =
  fun ~dns t ->
-  let exception Result of Uspf.Result.t in
   let rec go : type a. a Uspf.t -> a = function
-    | Request (domain_name, record) ->
-        Dns_client_unix.get_resource_record dns record domain_name
+    | Request (domain_name, record, fn) ->
+        let resp = Dns_client_unix.get_resource_record dns record domain_name in
+        go (fn resp)
     | Return v -> v
-    | Terminate result -> raise (Result result)
-    | Bind (x, fn) -> go (fn (go x))
-    | Choose_on
-        { none; neutral; pass; fail; softfail; temperror; permerror; fn } ->
-    match go (fn ()) with
-    | v -> v
-    | exception Result result ->
-        let reraise _ = raise (Result result) in
-        let fn =
-          match result with
-          | `None -> Option.fold ~none:reraise ~some:Fun.id none
-          | `Neutral -> Option.fold ~none:reraise ~some:Fun.id neutral
-          | `Fail -> Option.fold ~none:reraise ~some:Fun.id fail
-          | `Softfail -> Option.fold ~none:reraise ~some:Fun.id softfail
-          | `Temperror -> Option.fold ~none:reraise ~some:Fun.id temperror
-          | `Permerror -> Option.fold ~none:reraise ~some:Fun.id permerror
-          | `Pass m ->
-              let fn () =
-                match pass with Some pass -> pass m | None -> reraise () in
-              fn in
-        go (fn ()) in
-  match go t with exception Result result -> Some result | _ -> None
+    | Tries fns -> List.iter (fun fn -> go (fn ())) fns
+    | Map (x, fn) -> fn (go x)
+    | Choose_on c ->
+    try go (c.fn ())
+    with Uspf.Result result ->
+      let none _ = Uspf.terminate result in
+      let some = Fun.id in
+      let fn =
+        match result with
+        | `None -> Option.fold ~none ~some c.none
+        | `Neutral -> Option.fold ~none ~some c.neutral
+        | `Fail -> Option.fold ~none ~some c.fail
+        | `Softfail -> Option.fold ~none ~some c.softfail
+        | `Temperror -> Option.fold ~none ~some c.temperror
+        | `Permerror -> Option.fold ~none ~some c.permerror
+        | `Pass m -> begin
+            fun () -> match c.pass with Some pass -> pass m | None -> none ()
+          end in
+      go (fn ()) in
+  match go t with exception Uspf.Result result -> Some result | _ -> None
 
 let get_and_check dns ctx = eval ~dns (Uspf.get_and_check ctx)
 
