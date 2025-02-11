@@ -285,32 +285,39 @@ module Result : sig
     | `Softfail
     | `Temperror
     | `Permerror ]
+
+  val pp : Format.formatter -> t -> unit
 end
 
-type 'a response =
-  ( 'a
-  , [ `Msg of string
-    | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
-    | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ] )
-  result
+type error =
+  [ `Msg of string
+  | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
+  | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
 
-type 'a t =
-  | Request : 'x Domain_name.t * 'a Dns.Rr_map.key -> 'a response t
+type 'a response = ('a, error) result
+type 'a record = 'a Dns.Rr_map.key
+
+type 'a choose = {
+    none: (unit -> 'a t) option
+  ; neutral: (unit -> 'a t) option
+  ; pass: (mechanism -> 'a t) option
+  ; fail: (unit -> 'a t) option
+  ; softfail: (unit -> 'a t) option
+  ; temperror: (unit -> 'a t) option
+  ; permerror: (unit -> 'a t) option
+  ; fn: unit -> 'a t
+}
+
+and 'a t =
   | Return : 'a -> 'a t
-  | Terminate : Result.t -> 'a t
-  | Bind : 'a t * ('a -> 'b t) -> 'b t
-  | Choose_on : {
-        none: (unit -> 'a t) option
-      ; neutral: (unit -> 'a t) option
-      ; pass: (mechanism -> 'a t) option
-      ; fail: (unit -> 'a t) option
-      ; softfail: (unit -> 'a t) option
-      ; temperror: (unit -> 'a t) option
-      ; permerror: (unit -> 'a t) option
-      ; fn: unit -> 'a t
-    }
-      -> 'a t
+  | Request : _ Domain_name.t * 'a record * ('a response -> 'b t) -> 'b t
+  | Tries : (unit -> unit t) list -> unit t
+  | Map : 'a t * ('a -> 'b) -> 'b t
+  | Choose_on : 'a choose -> 'a t
 
+exception Result of Result.t
+
+val terminate : Result.t -> 'a
 val get_and_check : ctx -> unit t
 
 val to_field :
@@ -343,4 +350,8 @@ module Extract : sig
   val extractor : unit -> extract
   val extract : extract -> decode
   val src : extract -> string -> int -> int -> extract
+  val of_string : string -> (field, [> `Msg of string ]) Stdlib.result
+  val of_unstrctrd : Unstrctrd.t -> (field, [> `Msg of string ]) Stdlib.result
 end
+
+val field_received_spf : Mrmime.Field_name.t

@@ -33,36 +33,51 @@ module Result = struct
   let softfail = `Softfail
   let temperror = `Temperror
   let permerror = `Permerror
+
+  let pp ppf = function
+    | `None -> Format.pp_print_string ppf "none"
+    | `Neutral -> Format.pp_print_string ppf "neutral"
+    | `Pass _ -> Format.pp_print_string ppf "pass"
+    | `Fail -> Format.pp_print_string ppf "fail"
+    | `Softfail -> Format.pp_print_string ppf "softfail"
+    | `Temperror -> Format.pp_print_string ppf "temperror"
+    | `Permerror -> Format.pp_print_string ppf "permerror"
 end
 
-type 'a response =
-  ( 'a
-  , [ `Msg of string
-    | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
-    | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ] )
-  result
+type error =
+  [ `Msg of string
+  | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
+  | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
 
-type 'a t =
-  | Request : 'x Domain_name.t * 'a Dns.Rr_map.key -> 'a response t
+type 'a response = ('a, error) result
+type 'a record = 'a Dns.Rr_map.key
+
+type 'a choose = {
+    none: (unit -> 'a t) option
+  ; neutral: (unit -> 'a t) option
+  ; pass: (mechanism -> 'a t) option
+  ; fail: (unit -> 'a t) option
+  ; softfail: (unit -> 'a t) option
+  ; temperror: (unit -> 'a t) option
+  ; permerror: (unit -> 'a t) option
+  ; fn: unit -> 'a t
+}
+
+and 'a t =
   | Return : 'a -> 'a t
-  | Terminate : Result.t -> 'a t
-  | Bind : 'a t * ('a -> 'b t) -> 'b t
-  | Choose_on : {
-        none: (unit -> 'a t) option
-      ; neutral: (unit -> 'a t) option
-      ; pass: (mechanism -> 'a t) option
-      ; fail: (unit -> 'a t) option
-      ; softfail: (unit -> 'a t) option
-      ; temperror: (unit -> 'a t) option
-      ; permerror: (unit -> 'a t) option
-      ; fn: unit -> 'a t
-    }
-      -> 'a t
+  | Request : _ Domain_name.t * 'a record * ('a response -> 'b t) -> 'b t
+  | Tries : (unit -> unit t) list -> unit t
+  | Map : 'a t * ('a -> 'b) -> 'b t
+  | Choose_on : 'a choose -> 'a t
 
-let ( let* ) x fn = Bind (x, fn)
+let ( let* ) (domain_name, record) fn = Request (domain_name, record, fn)
+let tries fns = Tries fns
+let ( let+ ) x fn = Map (x, fn)
 let return x = Return x
-let request record domain_name = Request (domain_name, record)
-let terminate result = Terminate result
+
+exception Result of Result.t
+
+let terminate result = raise (Result result)
 
 let choose_on ?none ?neutral ?pass ?fail ?softfail ?temperror ?permerror fn =
   Choose_on { none; neutral; pass; fail; softfail; temperror; permerror; fn }
@@ -786,11 +801,11 @@ let rec select_spf1 = function
 
 let of_qualifier ~mechanism q match' =
   match (q, match') with
-  | Pass, true -> terminate (Result.pass mechanism)
+  | Pass, true -> raise (Result (Result.pass mechanism))
   | Fail, true -> terminate Result.fail
   | Softfail, true -> terminate Result.softfail
   | Neutral, true -> terminate Result.neutral
-  | _ -> return ()
+  | _ -> ()
 
 let ipv4_with_cidr cidr v4 =
   Option.fold
@@ -805,48 +820,58 @@ let ipv6_with_cidr cidr v6 =
     cidr
 
 let ipaddrs_of_mx { Dns.Mx.mail_exchange; _ } (cidr_v4, cidr_v6) =
-  let* response = request Dns.Rr_map.A mail_exchange in
+  let* response = (mail_exchange, Dns.Rr_map.A) in
   match response with
   | Ok (_, v4s) ->
       let v4s = Ipaddr.V4.Set.elements v4s in
       let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
       return (List.map (fun v -> Ipaddr.V4 v) v4s)
-  | Error _ -> (
-      let* response = request Dns.Rr_map.Aaaa mail_exchange in
+  | Error _ -> begin
+      let* response = (mail_exchange, Dns.Rr_map.Aaaa) in
       match response with
       | Ok (_, v6s) ->
           let v6s = Ipaddr.V6.Set.elements v6s in
           let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
           return (List.map (fun v -> Ipaddr.V6 v) v6s)
       | Error (`Msg _) -> terminate Result.temperror
-      | Error (`No_domain _ | `No_data _) -> return [])
+      | Error (`No_domain _ | `No_data _) -> return []
+    end
 
 let rec mx_mechanism ctx ~limit q domain_name dual_cidr =
-  let* response = request Dns.Rr_map.Mx domain_name in
+  let* response = (domain_name, Dns.Rr_map.Mx) in
   match response with
   | Error (`Msg _) -> terminate Result.temperror
   | Error (`No_data _ | `No_domain _) (* RCODE:3 *) -> return ()
   | Ok (_, mxs) ->
+      Log.debug (fun m ->
+          m "some responses for mx:%a" Domain_name.pp domain_name) ;
       go ~limit q (Map.get Map.K.ip ctx)
         (Dns.Rr_map.Mx_set.elements mxs)
         domain_name dual_cidr
 
 and go ~limit q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
-  if limit >= 10
-  then terminate Result.permerror
-  else
-    let mechanism = Mx (Some domain_name, cidr_v4, cidr_v6) in
+  if limit >= 10 then raise (Result Result.permerror) ;
+  let mechanism = Mx (Some domain_name, cidr_v4, cidr_v6) in
+  let mxs = List.filteri (fun idx _mx -> limit + idx < 10) mxs in
+  let mxs = Array.of_list mxs in
+  let fn idx () =
+    if idx >= Array.length mxs then terminate Result.permerror ;
+    let+ ipaddrs = ipaddrs_of_mx mxs.(idx) dual_cidr in
+    let exists = List.exists (Ipaddr.Prefix.mem expected) ipaddrs in
+    of_qualifier ~mechanism q exists in
+  let+ () = tries (List.init 10 fn) in
+  terminate Result.permerror
+
+(*
     match mxs with
     | [] -> return ()
     | mx :: mxs ->
-        let* ipaddrs = ipaddrs_of_mx mx dual_cidr in
-        let exists = List.exists (Ipaddr.Prefix.mem expected) ipaddrs in
-        let* () = of_qualifier ~mechanism q exists in
         go ~limit:(succ limit) q expected mxs domain_name dual_cidr
+*)
 
 let a_mechanism ctx ~limit:_ q domain_name (cidr_v4, cidr_v6) =
   let mechanism = A (Some domain_name, cidr_v4, cidr_v6) in
-  let* response = request Dns.Rr_map.A domain_name in
+  let* response = (domain_name, Dns.Rr_map.A) in
   match response with
   | Ok (_, v4s) ->
       let v4s = Ipaddr.V4.Set.elements v4s in
@@ -854,9 +879,10 @@ let a_mechanism ctx ~limit:_ q domain_name (cidr_v4, cidr_v6) =
       let expected = Map.get Map.K.ip ctx in
       let v4s = List.map (fun v -> Ipaddr.V4 v) v4s in
       let exists = List.exists (Ipaddr.Prefix.mem expected) v4s in
-      of_qualifier ~mechanism q exists
-  | Error _ -> (
-      let* response = request Dns.Rr_map.Aaaa domain_name in
+      of_qualifier ~mechanism q exists ;
+      return ()
+  | Error _ -> begin
+      let* response = (domain_name, Dns.Rr_map.Aaaa) in
       match response with
       | Ok (_, v6s) ->
           let v6s = Ipaddr.V6.Set.elements v6s in
@@ -864,21 +890,28 @@ let a_mechanism ctx ~limit:_ q domain_name (cidr_v4, cidr_v6) =
           let expected = Map.get Map.K.ip ctx in
           let v6s = List.map (fun v -> Ipaddr.V6 v) v6s in
           let exists = List.exists (Ipaddr.Prefix.mem expected) v6s in
-          of_qualifier ~mechanism q exists
+          of_qualifier ~mechanism q exists ;
+          return ()
       | Error (`Msg _) -> terminate Result.temperror
-      | Error (`No_domain _ | `No_data _) -> return ())
+      | Error (`No_domain _ | `No_data _) -> return ()
+    end
 
 let exists_mechanism _ctx ~limit:_ q domain_name =
   let mechanism = Exists domain_name in
-  let* response = request Dns.Rr_map.A domain_name in
+  let* response = (domain_name, Dns.Rr_map.A) in
   match response with
-  | Ok _ -> of_qualifier ~mechanism q true
-  | Error _ -> (
-      let* response = request Dns.Rr_map.Aaaa domain_name in
+  | Ok _ ->
+      of_qualifier ~mechanism q true ;
+      return ()
+  | Error _ -> begin
+      let* response = (domain_name, Dns.Rr_map.Aaaa) in
       match response with
-      | Ok _ -> of_qualifier ~mechanism q true
+      | Ok _ ->
+          of_qualifier ~mechanism q true ;
+          return ()
       | Error (`Msg _) -> terminate Result.temperror
-      | Error (`No_domain _ | `No_data _) -> return ())
+      | Error (`No_domain _ | `No_data _) -> return ()
+    end
 
 let has_redirect modifiers =
   let fold acc modifier =
@@ -899,20 +932,20 @@ let rec do_redirect ctx ~limit ~modifiers =
   | Some redirect, modifiers -> (
       let domain_name = Domain_name.of_string redirect in
       let domain_name = Stdlib.Result.get_ok domain_name in
-      let* response = request Dns.Rr_map.Txt domain_name in
+      let* response = (domain_name, Dns.Rr_map.Txt) in
       match response with
       | Error (`No_domain _ | `No_data _) ->
           go ctx ~limit:(succ limit) ~modifiers []
       | Error (`Msg _err) -> terminate Result.temperror
       | Ok (_, txts) ->
           let txts = Dns.Rr_map.Txt_set.elements txts in
-          let* terms =
+          let terms =
             match select_spf1 txts with
-            | Some terms -> return terms
+            | Some terms -> terms
             | None -> terminate Result.permerror in
-          let* terms =
+          let terms =
             match Term.parse_record terms with
-            | Ok terms -> return terms
+            | Ok terms -> terms
             | Error _ -> terminate Result.permerror in
           let empty = { Record.mechanisms= []; modifiers= [] } in
           let record = List.fold_left (Record.fold ctx) empty terms in
@@ -958,26 +991,28 @@ let rec do_redirect ctx ~limit ~modifiers =
 
 and include_mechanism ctx ~limit q domain_name =
   let ctx = Map.add Map.K.domain domain_name ctx in
-  let* response = request Dns.Rr_map.Txt domain_name in
+  let* response = (domain_name, Dns.Rr_map.Txt) in
   match response with
   | Error (`Msg _) -> terminate Result.temperror
   | Error (`No_domain _ | `No_data _) -> terminate Result.permerror
   | Ok (_, txts) ->
       let txts = Dns.Rr_map.Txt_set.elements txts in
-      let* terms =
+      let terms =
         match select_spf1 txts with
-        | Some terms -> return terms
+        | Some terms -> terms
         | None -> terminate Result.permerror in
-      let* terms =
+      let terms =
         match Term.parse_record terms with
-        | Ok terms -> return terms
+        | Ok terms -> terms
         | Error _ -> terminate Result.permerror in
       let empty = { Record.mechanisms= []; modifiers= [] } in
       let record = List.fold_left (Record.fold ctx) empty terms in
       let record = { record with mechanisms= List.rev record.mechanisms } in
       let record = { record with modifiers= List.rev record.modifiers } in
       let permerror () = terminate Result.permerror in
-      let pass mechanism = of_qualifier ~mechanism q true in
+      let pass mechanism =
+        of_qualifier ~mechanism q true ;
+        return () in
       let fn () = check ctx ~limit:(succ limit) record in
       choose_on fn ~permerror ~none:permerror ~pass
 
@@ -1006,7 +1041,9 @@ and include_mechanism ctx ~limit q domain_name =
 
 and apply ctx ~limit (q, mechanism) =
   match mechanism with
-  | All -> of_qualifier ~mechanism q true
+  | All ->
+      of_qualifier ~mechanism q true ;
+      return ()
   | A (Some domain_name, cidr_ipv4, cidr_ipv6) ->
       Log.debug (fun m ->
           m "Apply A mechanism with %a." Domain_name.pp domain_name) ;
@@ -1035,12 +1072,14 @@ and apply ctx ~limit (q, mechanism) =
       Log.debug (fun m ->
           m "Apply IPv4 mechanism with %a." Ipaddr.V4.Prefix.pp v4) ;
       let exists = Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V4 v4) in
-      of_qualifier ~mechanism q exists
+      of_qualifier ~mechanism q exists ;
+      return ()
   | V6 v6 ->
       Log.debug (fun m ->
           m "Apply IPv6 mechanism with %a." Ipaddr.V6.Prefix.pp v6) ;
       let exists = Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6) in
-      of_qualifier ~mechanism q exists
+      of_qualifier ~mechanism q exists ;
+      return ()
   | Exists domain_name -> exists_mechanism ctx ~limit q domain_name
   | Ptr _ -> return ()
 (* See RFC 7802, Appendix B. *)
@@ -1050,10 +1089,23 @@ and check ctx ~limit record =
 
 and go ctx ~limit ~modifiers = function
   | [] -> do_redirect ctx ~limit ~modifiers
+  | ms ->
+      let ms = List.filteri (fun idx _m -> idx + limit < 10) ms in
+      let ms = Array.of_list ms in
+      let fn idx () =
+        if idx >= Array.length ms then terminate Result.permerror ;
+        Log.debug (fun m -> m "Apply the mechanism %02d" idx) ;
+        apply ctx ~limit:(limit + idx) ms.(idx) in
+      let+ () = tries (List.init 10 fn) in
+      terminate Result.permerror
+
+(*
+  | [] -> do_redirect ctx ~limit ~modifiers
   | (q, mechanism) :: rest when limit < 10 ->
-      let* () = apply ctx ~limit (q, mechanism) in
+      let+ () = apply ctx ~limit (q, mechanism) in
       go ctx ~limit ~modifiers rest
-  | _ -> terminate Result.permerror
+  | _ -> raise (Result Result.permerror)
+*)
 
 let check ctx record = check ctx ~limit:0 record
 
@@ -1061,20 +1113,20 @@ let get_and_check ctx =
   match Map.find Map.K.domain ctx with
   | None -> failwith "Missing domain-name into the given context"
   | Some domain_name -> (
-      let* response = request Dns.Rr_map.Txt domain_name in
+      let* response = (domain_name, Dns.Rr_map.Txt) in
       match response with
       | Error (`No_domain _ | `No_data _) -> terminate Result.none
       | Error (`Msg _err) -> terminate Result.temperror
       | Ok (_, txts) ->
           let txts = Dns.Rr_map.Txt_set.elements txts in
-          let* txts =
+          let txts =
             match select_spf1 txts with
-            | None -> terminate Result.none
-            | Some txts -> return txts in
-          let* terms =
+            | None -> raise (Result Result.none)
+            | Some txts -> txts in
+          let terms =
             match Term.parse_record txts with
-            | Ok terms -> return terms
-            | Error _ -> terminate Result.permerror in
+            | Ok terms -> terms
+            | Error _ -> raise (Result Result.permerror) in
           let empty = { Record.mechanisms= []; modifiers= [] } in
           let record = List.fold_left (Record.fold ctx) empty terms in
           let record = { record with mechanisms= List.rev record.mechanisms } in
@@ -1575,6 +1627,16 @@ module Extract = struct
   let extract t =
     let (Extraction (decoder, fields)) = t.state in
     extract t decoder fields
+
+  let of_unstrctrd unstrctrd =
+    let ( let* ) = Stdlib.Result.bind in
+    let* v = Decoder.parse_received_spf_field_value unstrctrd in
+    Ok (to_field v)
+
+  let of_string str =
+    let ( let* ) = Stdlib.Result.bind in
+    let* _, unstrctrd = Unstrctrd.of_string (str ^ "\r\n") in
+    of_unstrctrd unstrctrd
 end
 
 (*

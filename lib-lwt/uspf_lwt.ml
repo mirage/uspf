@@ -2,38 +2,41 @@ open Lwt.Infix
 
 external reraise : exn -> 'a = "%reraise"
 
+let ( % ) f g = fun x -> f (g x)
+
 let eval : type a.
     dns:Dns_client_lwt.t -> a Uspf.t -> Uspf.Result.t option Lwt.t =
  fun ~dns t ->
-  let exception Result of Uspf.Result.t in
   let rec go : type a. a Uspf.t -> a Lwt.t = function
-    | Request (domain_name, record) ->
+    | Request (domain_name, record, fn) ->
         Dns_client_lwt.get_resource_record dns record domain_name
+        >>= fun resp -> go (fn resp)
     | Return v -> Lwt.return v
-    | Terminate result -> raise (Result result)
-    | Bind (x, fn) -> go x >>= fun x -> go (fn x)
-    | Choose_on
-        { none= fnone; neutral; pass; fail; softfail; temperror; permerror; fn }
-      -> (
-        Lwt.catch (fun () -> go (fn ())) @@ function
-        | Result result ->
-            let none _ = reraise (Result result) in
+    | Tries lst -> Lwt_list.iter_p (fun fn -> go (fn ())) lst
+    | Map (x, fn) -> go x >|= fn
+    | Choose_on c -> begin
+        Lwt.catch (go % c.fn) @@ function
+        | Uspf.Result result ->
+            let none _ = Uspf.terminate result in
+            let some = Fun.id in
             let fn =
               match result with
-              | `None -> Option.fold ~none ~some:Fun.id fnone
-              | `Neutral -> Option.fold ~none ~some:Fun.id neutral
-              | `Fail -> Option.fold ~none ~some:Fun.id fail
-              | `Softfail -> Option.fold ~none ~some:Fun.id softfail
-              | `Temperror -> Option.fold ~none ~some:Fun.id temperror
-              | `Permerror -> Option.fold ~none ~some:Fun.id permerror
-              | `Pass m ->
-                  let fn () =
-                    match pass with Some pass -> pass m | None -> none () in
-                  fn in
+              | `None -> Option.fold ~none ~some c.none
+              | `Neutral -> Option.fold ~none ~some c.neutral
+              | `Fail -> Option.fold ~none ~some c.fail
+              | `Softfail -> Option.fold ~none ~some c.softfail
+              | `Temperror -> Option.fold ~none ~some c.temperror
+              | `Permerror -> Option.fold ~none ~some c.permerror
+              | `Pass m -> begin
+                  fun () ->
+                    match c.pass with Some pass -> pass m | None -> none ()
+                end in
             go (fn ())
-        | exn -> reraise exn) in
-  Lwt.catch (fun () -> go t >>= fun _ -> Lwt.return_none) @@ function
-  | Result result -> Lwt.return_some result
+        | exn -> reraise exn
+      end in
+  let fn () = go t >>= fun _ -> Lwt.return_none in
+  Lwt.catch fn @@ function
+  | Uspf.Result result -> Lwt.return_some result
   | _exn -> Lwt.return_none
 
 let get_and_check dns ctx = eval ~dns (Uspf.get_and_check ctx)

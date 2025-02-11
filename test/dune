@@ -1,6 +1,6 @@
 (executable
  (name test_macro)
- (libraries rresult uspf alcotest))
+ (libraries logs.fmt rresult uspf alcotest))
 
 (rule
  (alias runtest)
