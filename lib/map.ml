@@ -77,4 +77,10 @@ module K = struct
 
   let helo : Colombe.Domain.t key =
     Key.create { name= "helo"; pp= Colombe.Domain.pp }
+
+  let origin : [ `HELO | `MAILFROM ] key =
+    let pp ppf = function
+      | `HELO -> Fmt.string ppf "HELO"
+      | `MAILFROM -> Fmt.string ppf "MAILFROM" in
+    Key.create { name= "origin"; pp }
 end

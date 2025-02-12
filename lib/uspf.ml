@@ -90,6 +90,7 @@ let with_sender sender ctx =
   match sender with
   | `HELO (domain_name : [ `raw ] Domain_name.t) ->
       let domain = Colombe.Domain.Domain (Domain_name.to_strings domain_name) in
+      let ctx = Map.add Map.K.origin `HELO ctx in
       let ctx = Map.add Map.K.helo domain ctx in
       let ctx = Map.add Map.K.domain_of_sender domain ctx in
       let ctx = Map.add Map.K.sender sender ctx in
@@ -99,6 +100,7 @@ let with_sender sender ctx =
        * substitute the string "postmaster" for the local-part. *)
       ctx
   | `MAILFROM { Colombe.Path.local; domain; _ } ->
+      let ctx = Map.add Map.K.origin `MAILFROM ctx in
       let ctx = Map.add Map.K.local local ctx in
       let ctx = Map.add Map.K.domain_of_sender domain ctx in
       let ctx = Map.add Map.K.sender sender ctx in
@@ -144,6 +146,8 @@ let domain ctx =
   | _, _, _, Some (`MAILFROM { Colombe.Path.domain= v; _ }) ->
       Stdlib.Result.to_option (colombe_domain_to_domain_name v)
   | None, None, None, None -> None
+
+let origin ctx = Map.find Map.K.origin ctx
 
 module Macro = struct
   open Angstrom
@@ -773,32 +777,6 @@ let rec select_spf1 = function
       if String.sub x 0 6 = "v=spf1" then Some x else select_spf1 r
   | _ :: r -> select_spf1 r
 
-(*
-      match
-        let ( >>= ) x f = Result.bind x f in
-        select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
-      with
-      | Error `None -> return (Ok `None) (* XXX(dinosaure): see RFC 7208, 4.5 *)
-      | Error (`Msg err) ->
-          Log.err (fun m ->
-              m "Invalid SPF record: %a: %s."
-                Fmt.(Dump.list string)
-                (Dns.Rr_map.Txt_set.elements txts)
-                err) ;
-          return (Ok `Permerror)
-      | Ok terms ->
-          let record =
-            List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
-          in
-          return
-            (Ok
-               (`Record
-                 {
-                   mechanisms = List.rev record.mechanisms;
-                   modifiers = List.rev record.modifiers;
-                 }))
-*)
-
 let of_qualifier ~mechanism q match' =
   match (q, match') with
   | Pass, true -> raise (Result (Result.pass mechanism))
@@ -861,13 +839,6 @@ and go ~limit q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
     of_qualifier ~mechanism q exists in
   let+ () = tries (List.init 10 fn) in
   terminate Result.permerror
-
-(*
-    match mxs with
-    | [] -> return ()
-    | mx :: mxs ->
-        go ~limit:(succ limit) q expected mxs domain_name dual_cidr
-*)
 
 let a_mechanism ctx ~limit:_ q domain_name (cidr_v4, cidr_v6) =
   let mechanism = A (Some domain_name, cidr_v4, cidr_v6) in
@@ -957,38 +928,6 @@ let rec do_redirect ctx ~limit ~modifiers =
           let neutral () = go ctx ~limit:(succ limit) ~modifiers [] in
           choose_on fn ~neutral)
 
-(*
-      match
-        let ( >>= ) x f = Result.bind x f in
-        select_spf1 (Dns.Rr_map.Txt_set.elements txts) >>= Term.parse_record
-      with
-      | Error `None -> return `Permerror (* XXX(dinosaure): see RFC 7208, 6.1 *)
-      | Error (`Msg err) ->
-          Log.err (fun m ->
-              m "Invalid SPF record: %a: %s."
-                Fmt.(Dump.list string)
-                (Dns.Rr_map.Txt_set.elements txts)
-                err) ;
-          return `Permerror
-      | Ok terms -> (
-          let record =
-            List.fold_left (fold ctx)  terms
-          in
-          let record =
-            {
-              mechanisms = List.rev record.mechanisms;
-              modifiers = List.rev record.modifiers;
-            } in
-          let ctx' = Map.add Map.K.domain domain_name ctx in
-          go ~ctx:ctx' ~limit state dns
-            (module DNS)
-            ~modifiers:record.modifiers record.mechanisms
-          >>= function
-          | `Neutral ->
-              go ~ctx ~limit:(succ limit) state dns (module DNS) ~modifiers []
-          | result -> return result))
-*)
-
 and include_mechanism ctx ~limit q domain_name =
   let ctx = Map.add Map.K.domain domain_name ctx in
   let* response = (domain_name, Dns.Rr_map.Txt) in
@@ -1015,29 +954,6 @@ and include_mechanism ctx ~limit q domain_name =
         return () in
       let fn () = check ctx ~limit:(succ limit) record in
       choose_on fn ~permerror ~none:permerror ~pass
-
-(*
-  match
-    let ( >>= ) x f = Result.bind x f in
-    select_spf1  >>= Term.parse_record
-  with
-  | Error `None | Error (`Msg _) -> return `Permerror
-  | Ok terms -> (
-      let record =
-        List.fold_left (fold ctx) { mechanisms = []; modifiers = [] } terms
-      in
-      let record =
-        {
-          mechanisms = List.rev record.mechanisms;
-          modifiers = List.rev record.modifiers;
-        } in
-      Log.debug (fun m -> m "Compute new record: %a." pp record) ;
-      check ~ctx ~limit:(succ limit) state dns (module DNS) record >>= function
-      | `Permerror | `None -> return `Permerror
-      | `Temperror -> return `Temperror
-      | `Pass mechanism -> return (of_qualifier ~mechanism q true)
-      | `Fail | `Softfail | `Neutral -> return `Continue)
-*)
 
 and apply ctx ~limit (q, mechanism) =
   match mechanism with
@@ -1099,14 +1015,6 @@ and go ctx ~limit ~modifiers = function
       let+ () = tries (List.init 10 fn) in
       terminate Result.permerror
 
-(*
-  | [] -> do_redirect ctx ~limit ~modifiers
-  | (q, mechanism) :: rest when limit < 10 ->
-      let+ () = apply ctx ~limit (q, mechanism) in
-      go ctx ~limit ~modifiers rest
-  | _ -> raise (Result Result.permerror)
-*)
-
 let check ctx record = check ctx ~limit:0 record
 
 let get_and_check ctx =
@@ -1136,7 +1044,7 @@ let get_and_check ctx =
 module Encoder = struct
   open Prettym
 
-  let res ppf = function
+  let result ppf = function
     | `None -> string ppf "none"
     | `Neutral -> string ppf "neutral"
     | `Pass _ -> string ppf "pass"
@@ -1186,19 +1094,19 @@ module Encoder = struct
     | Some receiver, `MAILFROM p, `Pass _ ->
         eval ppf
           [
-            spaces 1; char $ '('; !!domain_name; char $ ':'; spaces 1
-          ; string $ "domain"; spaces 1; string $ "of"; spaces 1; !!sender
-          ; spaces 1; string $ "designates"; spaces 1; !!ipaddr; spaces 1
-          ; string $ "as"; spaces 1; string $ "permitted"; spaces 1
-          ; string $ "sender"; char $ ')'
+            char $ '('; !!domain_name; char $ ':'; spaces 1; string $ "domain"
+          ; spaces 1; string $ "of"; spaces 1; !!sender; spaces 1
+          ; string $ "designates"; spaces 1; !!ipaddr; spaces 1; string $ "as"
+          ; spaces 1; string $ "permitted"; spaces 1; string $ "sender"
+          ; char $ ')'
           ]
           receiver p (Map.get Map.K.ip ctx)
     | Some receiver, `MAILFROM p, _ ->
         eval ppf
           [
-            spaces 1; char $ '('; !!domain_name; char $ ':'; spaces 1
-          ; string $ "domain"; spaces 1; string $ "of"; spaces 1; !!sender
-          ; spaces 1; string $ "does"; spaces 1; string $ "not"; spaces 1
+            char $ '('; !!domain_name; char $ ':'; spaces 1; string $ "domain"
+          ; spaces 1; string $ "of"; spaces 1; !!sender; spaces 1
+          ; string $ "does"; spaces 1; string $ "not"; spaces 1
           ; string $ "designates"; spaces 1; !!ipaddr; spaces 1; string $ "as"
           ; spaces 1; string $ "permitted"; spaces 1; string $ "sender"
           ; char $ ')'
@@ -1208,7 +1116,7 @@ module Encoder = struct
 
   let field ~ctx ?receiver ppf v =
     eval ppf
-      ([ tbox 1; !!res; !!(comment ~ctx ?receiver) ]
+      ([ tbox 1; !!result; fws; !!(comment ~ctx ?receiver) ]
       ^^ kv ~name:"client-ip" Map.K.ip ~pp:Ipaddr.pp ctx
       ^^ kv ~name:"envelope-from" Map.K.sender ctx
       ^^ kv ~name:"helo" Map.K.helo ctx
@@ -1446,7 +1354,11 @@ let ctx_of_kvs kvs =
             ctx
         | Error _, _ -> ctx)
     | _ -> ctx in
-  (identity, receiver, List.fold_left fold Map.empty kvs)
+  let ctx =
+    match identity with
+    | Some value -> Map.singleton Map.K.origin value
+    | None -> Map.empty in
+  (identity, receiver, List.fold_left fold ctx kvs)
 
 let colombe_domain_to_emile_domain = function
   | Colombe.Domain.IPv4 v -> `Addr (Emile.IPv4 v)
@@ -1584,7 +1496,7 @@ module Extract = struct
 
   let src t src idx len =
     if idx < 0 || len < 0 || idx + len > String.length src
-    then Fmt.invalid_arg "Dkim.Verify.src: source out of bounds" ;
+    then Fmt.invalid_arg "Uspf.Extract.src: source out of bounds" ;
     let input = Bytes.unsafe_of_string src in
     let input_pos = idx in
     let input_len = idx + len - 1 in
