@@ -102,6 +102,8 @@ val with_ip : Ipaddr.t -> ctx -> ctx
 val domain : ctx -> [ `raw ] Domain_name.t option
 (** [domain ctx] returns the domain-name of the sender if it exists. *)
 
+val origin : ctx -> [ `HELO | `MAILFROM ] option
+
 module Macro : sig
   type macro =
     [ `Literal of string
@@ -352,6 +354,14 @@ module Extract : sig
   val src : extract -> string -> int -> int -> extract
   val of_string : string -> (field, [> `Msg of string ]) Stdlib.result
   val of_unstrctrd : Unstrctrd.t -> (field, [> `Msg of string ]) Stdlib.result
+end
+
+module Encoder : sig
+  open Prettym
+
+  val result : Prettym.ppf -> Result.t -> Prettym.ppf
+  val comment : ctx:ctx -> ?receiver:Emile.domain -> ppf -> Result.t -> ppf
+  val field : ctx:ctx -> ?receiver:Emile.domain -> ppf -> Result.t -> ppf
 end
 
 val field_received_spf : Mrmime.Field_name.t
