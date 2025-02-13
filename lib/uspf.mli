@@ -103,6 +103,12 @@ val domain : ctx -> [ `raw ] Domain_name.t option
 (** [domain ctx] returns the domain-name of the sender if it exists. *)
 
 val origin : ctx -> [ `HELO | `MAILFROM ] option
+(** [origin ctx] returns the origin of the sender (from the [HELO] SMTP command
+    or the [MAILFROM] command). *)
+
+val merge : ctx -> ctx -> ctx option
+(** [merge ctx0 ctx1] merges the given contexts and ensure that they are
+    partially equal. *)
 
 module Macro : sig
   type macro =
