@@ -129,6 +129,29 @@ let with_ip ip ctx =
       let ctx = Map.add Map.K.ip ip ctx in
       ctx
 
+let merge ctx0 ctx1 =
+  (* ip, domain, sender, local, domain_of_sender, v, helo, origin *)
+  let same_or_unknown k ctx0 ctx1 =
+    match (Map.find k ctx0, Map.find k ctx1) with
+    | None, None | Some _, None | None, Some _ -> true
+    | Some a, Some b ->
+        let info = Map.Key.info k in
+        info.Map.Info.equal a b in
+  if
+    same_or_unknown Map.K.ip ctx0 ctx1
+    && same_or_unknown Map.K.domain ctx0 ctx1
+    && same_or_unknown Map.K.local ctx0 ctx1
+    && same_or_unknown Map.K.domain_of_sender ctx0 ctx1
+    && same_or_unknown Map.K.v ctx0 ctx1
+    && same_or_unknown Map.K.helo ctx0 ctx1
+    && same_or_unknown Map.K.origin ctx0 ctx1
+  then
+    let fn (Map.B (k, v)) ctx = Map.add k v ctx in
+    let ctx = Map.fold fn Map.empty ctx0 in
+    let ctx = Map.fold fn ctx ctx1 in
+    Some ctx
+  else None
+
 let colombe_domain_to_domain_name = function
   | Colombe.Domain.Domain lst -> Domain_name.of_strings lst
   | v -> error_msgf "Invalid domain-name: %a" Colombe.Domain.pp v
@@ -1149,8 +1172,7 @@ let to_field :
     -> Mrmime.Field_name.t * Unstrctrd.t =
  fun ~ctx ?receiver res ->
   let v = Prettym.to_string (Encoder.field ~ctx ?receiver) res in
-  let _, v =
-    match Unstrctrd.of_string v with Ok v -> v | Error _ -> assert false in
+  let _, v = Stdlib.Result.get_ok (Unstrctrd.of_string v) in
   (field_received_spf, v)
 
 module Decoder = struct
@@ -1431,10 +1453,9 @@ module Extract = struct
           | None -> (Map.add Map.K.ip ip' ctx, ip') in
         let ctx, sender =
           match (Map.find Map.K.sender ctx, identity) with
-          | Some (`HELO _), Some `MAILFROM ->
-              assert false (* XXX(dinosaure): I'm correct? *)
-          | Some (`HELO _), (Some `HELO | None) -> (ctx, to_mailbox p')
-          | Some (`MAILFROM p), _ -> (ctx, to_mailbox p)
+          | Some (`HELO _), Some `MAILFROM -> (ctx, None)
+          | Some (`HELO _), (Some `HELO | None) -> (ctx, Some (to_mailbox p'))
+          | Some (`MAILFROM p), _ -> (ctx, Some (to_mailbox p))
           | None, (Some `MAILFROM | None) ->
               let { Colombe.Path.local; domain; _ } = p' in
               let ctx = Map.add Map.K.sender (`MAILFROM p') ctx in
@@ -1445,7 +1466,7 @@ module Extract = struct
                 | Colombe.Domain.Domain vs, None ->
                     Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx
                 | _ -> ctx in
-              (ctx, to_mailbox p')
+              (ctx, Some (to_mailbox p'))
           | None, Some `HELO ->
               let { Colombe.Path.local; domain; _ } = p' in
               let ctx = Map.add Map.K.local local ctx in
@@ -1459,14 +1480,8 @@ module Extract = struct
                     let v = Domain_name.of_strings_exn vs in
                     Map.add Map.K.sender (`HELO v) ctx
                 | _ -> ctx in
-              (ctx, to_mailbox p') in
-        {
-          result
-        ; receiver= Some receiver
-        ; sender= Some sender
-        ; ip= Some ip
-        ; ctx
-        }
+              (ctx, Some (to_mailbox p')) in
+        { result; receiver= Some receiver; sender; ip= Some ip; ctx }
     | result, None, kvs ->
         let _identity, receiver, ctx = ctx_of_kvs kvs in
         let receiver = Option.map colombe_domain_to_emile_domain receiver in
