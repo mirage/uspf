@@ -844,11 +844,10 @@ let rec mx_mechanism ctx ~limit q domain_name dual_cidr =
   | Error (`Msg _) -> terminate Result.temperror
   | Error (`No_data _ | `No_domain _) (* RCODE:3 *) -> return ()
   | Ok (_, mxs) ->
-      Log.debug (fun m ->
-          m "some responses for mx:%a" Domain_name.pp domain_name) ;
-      go ~limit q (Map.get Map.K.ip ctx)
-        (Dns.Rr_map.Mx_set.elements mxs)
-        domain_name dual_cidr
+  match Map.get Map.K.ip ctx with
+  | value ->
+      go ~limit q value (Dns.Rr_map.Mx_set.elements mxs) domain_name dual_cidr
+  | exception _ -> return ()
 
 and go ~limit q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
   if limit >= 10 then raise (Result Result.permerror) ;
@@ -1124,17 +1123,21 @@ module Encoder = struct
           ; char $ ')'
           ]
           receiver p (Map.get Map.K.ip ctx)
-    | Some receiver, `MAILFROM p, _ ->
-        eval ppf
-          [
-            char $ '('; !!domain_name; char $ ':'; spaces 1; string $ "domain"
-          ; spaces 1; string $ "of"; spaces 1; !!sender; spaces 1
-          ; string $ "does"; spaces 1; string $ "not"; spaces 1
-          ; string $ "designates"; spaces 1; !!ipaddr; spaces 1; string $ "as"
-          ; spaces 1; string $ "permitted"; spaces 1; string $ "sender"
-          ; char $ ')'
-          ]
-          receiver p (Map.get Map.K.ip ctx)
+    | Some receiver, `MAILFROM p, _ -> begin
+        match Map.get Map.K.ip ctx with
+        | value ->
+            eval ppf
+              [
+                char $ '('; !!domain_name; char $ ':'; spaces 1
+              ; string $ "domain"; spaces 1; string $ "of"; spaces 1; !!sender
+              ; spaces 1; string $ "does"; spaces 1; string $ "not"; spaces 1
+              ; string $ "designates"; spaces 1; !!ipaddr; spaces 1
+              ; string $ "as"; spaces 1; string $ "permitted"; spaces 1
+              ; string $ "sender"; char $ ')'
+              ]
+              receiver p value
+        | exception _ -> ppf
+      end
     | Some _, `HELO _, _ -> ppf
 
   let field ~ctx ?receiver ppf v =
