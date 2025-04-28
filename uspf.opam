@@ -31,3 +31,4 @@ depends: [
   "alcotest"    {with-test}
   "rresult"     {>= "0.7.0" & with-test}
 ]
+x-maintenance-intent: [ "(latest)" ]
