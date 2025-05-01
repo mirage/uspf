@@ -1,3 +1,10 @@
+### 0.1.0 (2025-04-28) Paris - France
+
+- Remove Higher Kinded Polymorphism (#26, #27, @dinosaure)
+- Be able to merge multiple SPF contexts (#30, @dinosaure)
+- Lint the library and delete useless code (#29, @dinosaure)
+- Be able to emit a `Received-SPF` without IP address
+
 ### 0.0.4 (2024-10-25) Paris - France
 
 - Add a `mirage` derivation of `uspf` (#23, @dinosaure)
