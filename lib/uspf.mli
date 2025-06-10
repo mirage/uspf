@@ -327,6 +327,7 @@ exception Result of Result.t
 
 val terminate : Result.t -> 'a
 val get_and_check : ctx -> unit t
+val get : ctx -> (Term.t, [> `Msg of string ]) result t
 
 val to_field :
      ctx:ctx

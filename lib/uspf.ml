@@ -1063,6 +1063,20 @@ let get_and_check ctx =
           let record = { record with modifiers= List.rev record.modifiers } in
           check ctx record)
 
+let get ctx =
+  match Map.find Map.K.domain ctx with
+  | None -> failwith "Missing domain-name into the given context"
+  | Some domain_name -> (
+      let* response = (domain_name, Dns.Rr_map.Txt) in
+      match response with
+      | Error (`No_domain _ | `No_data _) -> terminate Result.none
+      | Error (`Msg _err) -> terminate Result.temperror
+      | Ok (_, txts) -> (
+          let txts = Dns.Rr_map.Txt_set.elements txts in
+          match select_spf1 txts with
+          | Some txts -> return (Term.parse_record txts)
+          | None -> return (error_msgf "SPF record not found")))
+
 module Encoder = struct
   open Prettym
 
