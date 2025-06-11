@@ -11,3 +11,8 @@
     (and can not) the SPF check (as the Unix layer, see {!module:Uspf_unix}). *)
 
 val get_and_check : Dns_client_lwt.t -> Uspf.ctx -> Uspf.Result.t option Lwt.t
+
+val get :
+     Dns_client_lwt.t
+  -> Uspf.ctx
+  -> (Uspf.Term.t, [> `Msg of string ]) result Lwt.t

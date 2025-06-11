@@ -40,3 +40,17 @@ let eval : type a.
   | _exn -> Lwt.return_none
 
 let get_and_check dns ctx = eval ~dns (Uspf.get_and_check ctx)
+
+let eval : type a. dns:Dns_client_lwt.t -> a Uspf.t -> a Lwt.t =
+ fun ~dns t ->
+  let rec go : type a. a Uspf.t -> a Lwt.t = function
+    | Request (domain_name, record, fn) ->
+        Dns_client_lwt.get_resource_record dns record domain_name
+        >>= fun resp -> go (fn resp)
+    | Return v -> Lwt.return v
+    | Tries _ -> assert false
+    | Map (x, fn) -> go x >|= fn
+    | Choose_on _ -> assert false in
+  go t
+
+let get dns ctx = eval ~dns (Uspf.get ctx)
