@@ -1,3 +1,8 @@
+### 0.2.0 (2025-11-27) Paris - France
+
+- Add `Uspf.get` and `Uspf_lwt.get` to check if the SPF record exists
+  (@dinosaure, #32, #33)
+
 ### 0.1.0 (2025-04-28) Paris - France
 
 - Remove Higher Kinded Polymorphism (#26, #27, @dinosaure)
