@@ -184,6 +184,7 @@ let test05 =
       a Domain_name.t -> r Dns.Rr_map.key -> r Uspf.response =
    fun domain_name record ->
     let _192_168_1_1 = Ipaddr.V4.(Set.singleton (of_string_exn "192.168.1.1")) in
+    let fc00__1 = Ipaddr.V6.(Set.singleton (of_string_exn "fc00::1")) in
     let mxs =
       Dns.Rr_map.Mx_set.singleton
         {
@@ -194,16 +195,72 @@ let test05 =
     | Dns.Rr_map.Txt, "bar.com" ->
         Ok (0l, Dns.Rr_map.Txt_set.singleton "v=spf1 mx a:foo.com -all")
     | Dns.Rr_map.A, "mail.bar.com" -> Ok (0l, _192_168_1_1)
+    | Dns.Rr_map.Aaaa, "mail.bar.com" -> Ok (0l, fc00__1)
     | Dns.Rr_map.Mx, "bar.com" -> Ok (0l, mxs)
     | _ ->
         R.error_msgf "Error on %a:%a." Dns.Rr_map.ppk (Dns.Rr_map.K record)
           Domain_name.pp domain_name in
   let getrrecord = { fn= getrrecord } in
+
+  (* ipv4 *)
   let ctx =
     Uspf.empty
     |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
     |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
     |> Uspf.with_ip (Ipaddr.of_string_exn "192.168.1.1") in
+  let result = eval ~getrrecord (Uspf.get_and_check ctx) in
+  (match result with
+  | Some (`Pass _) -> Alcotest.(check pass) "spf" () ()
+  | Some result -> Alcotest.failf "Invalid SPF result: %a" Uspf.Result.pp result
+  | None -> Alcotest.failf "Impossible to compute a result") ;
+
+  (* ipv6 *)
+  let ctx =
+    Uspf.empty
+    |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
+    |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
+    |> Uspf.with_ip (Ipaddr.of_string_exn "fc00::1") in
+  let result = eval ~getrrecord (Uspf.get_and_check ctx) in
+  match result with
+  | Some (`Pass _) -> Alcotest.(check pass) "spf" () ()
+  | Some result -> Alcotest.failf "Invalid SPF result: %a" Uspf.Result.pp result
+  | None -> Alcotest.failf "Impossible to compute a result"
+
+let test06 =
+  Alcotest.test_case "a" `Quick @@ fun () ->
+  let getrrecord : type a r.
+      a Domain_name.t -> r Dns.Rr_map.key -> r Uspf.response =
+   fun domain_name record ->
+    let _192_168_1_1 = Ipaddr.V4.(Set.singleton (of_string_exn "192.168.1.1")) in
+    let fc00__1 = Ipaddr.V6.(Set.singleton (of_string_exn "fc00::1")) in
+    match (record, Domain_name.to_string domain_name) with
+    | Dns.Rr_map.Txt, "bar.com" ->
+        Ok (0l, Dns.Rr_map.Txt_set.singleton "v=spf1 a:bar.com -all")
+    | Dns.Rr_map.A, "bar.com" -> Ok (0l, _192_168_1_1)
+    | Dns.Rr_map.Aaaa, "bar.com" -> Ok (0l, fc00__1)
+    | _ ->
+        R.error_msgf "Error on %a:%a." Dns.Rr_map.ppk (Dns.Rr_map.K record)
+          Domain_name.pp domain_name in
+  let getrrecord = { fn= getrrecord } in
+
+  (* ipv4 *)
+  let ctx =
+    Uspf.empty
+    |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
+    |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
+    |> Uspf.with_ip (Ipaddr.of_string_exn "192.168.1.1") in
+  let result = eval ~getrrecord (Uspf.get_and_check ctx) in
+  (match result with
+  | Some (`Pass _) -> Alcotest.(check pass) "spf" () ()
+  | Some result -> Alcotest.failf "Invalid SPF result: %a" Uspf.Result.pp result
+  | None -> Alcotest.failf "Impossible to compute a result") ;
+
+  (* ipv6 *)
+  let ctx =
+    Uspf.empty
+    |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
+    |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
+    |> Uspf.with_ip (Ipaddr.of_string_exn "fc00::1") in
   let result = eval ~getrrecord (Uspf.get_and_check ctx) in
   match result with
   | Some (`Pass _) -> Alcotest.(check pass) "spf" () ()
@@ -214,5 +271,5 @@ let () =
   Alcotest.run "decoding"
     [
       ("macro", [ test01; test02 ]); ("record", [ test03; test04 ])
-    ; ("spf", [ test05 ])
+    ; ("spf", [ test05; test06 ])
     ]
