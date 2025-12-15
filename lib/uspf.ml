@@ -75,6 +75,10 @@ let tries fns = Tries fns
 let ( let+ ) x fn = Map (x, fn)
 let return x = Return x
 
+let bind_result x f =
+  let* result = x in
+  match result with Ok x -> f x | Error err -> return (Error err)
+
 exception Result of Result.t
 
 let terminate result = raise (Result result)
@@ -820,23 +824,28 @@ let ipv6_with_cidr cidr v6 =
     ~some:(fun v -> Ipaddr.V6.Prefix.make v v6)
     cidr
 
-let ipaddrs_of_mx { Dns.Mx.mail_exchange; _ } (cidr_v4, cidr_v6) =
-  let* response = (mail_exchange, Dns.Rr_map.A) in
-  match response with
-  | Ok (_, v4s) ->
+let ipaddrs_of_domain domain expected (cidr_v4, cidr_v6) =
+  let ( let* ) = bind_result in
+  match expected with
+  | Ipaddr.V4 _ ->
+      let* _, v4s = (domain, Dns.Rr_map.A) in
       let v4s = Ipaddr.V4.Set.elements v4s in
       let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
-      return (List.map (fun v -> Ipaddr.V4 v) v4s)
-  | Error _ -> begin
-      let* response = (mail_exchange, Dns.Rr_map.Aaaa) in
-      match response with
-      | Ok (_, v6s) ->
-          let v6s = Ipaddr.V6.Set.elements v6s in
-          let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
-          return (List.map (fun v -> Ipaddr.V6 v) v6s)
-      | Error (`Msg _) -> terminate Result.temperror
-      | Error (`No_domain _ | `No_data _) -> return []
-    end
+      let v4s = List.map (fun v -> Ipaddr.V4 v) v4s in
+      return (Ok v4s)
+  | V6 _ ->
+      let* _, v6s = (domain, Dns.Rr_map.Aaaa) in
+      let v6s = Ipaddr.V6.Set.elements v6s in
+      let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
+      let v6s = List.map (fun v -> Ipaddr.V6 v) v6s in
+      return (Ok v6s)
+
+let ipaddrs_of_mx { Dns.Mx.mail_exchange; _ } expected (cidr_v4, cidr_v6) =
+  let+ result = ipaddrs_of_domain mail_exchange expected (cidr_v4, cidr_v6) in
+  match result with
+  | Ok ips -> ips
+  | Error (`Msg _) -> terminate Result.temperror
+  | Error (`No_domain _ | `No_data _) -> []
 
 let rec mx_mechanism ctx ~limit q domain_name dual_cidr =
   let* response = (domain_name, Dns.Rr_map.Mx) in
@@ -856,7 +865,7 @@ and go ~limit q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
   let mxs = Array.of_list mxs in
   let fn idx () =
     if idx >= Array.length mxs then terminate Result.permerror ;
-    let+ ipaddrs = ipaddrs_of_mx mxs.(idx) dual_cidr in
+    let+ ipaddrs = ipaddrs_of_mx mxs.(idx) expected dual_cidr in
     let exists = List.exists (Ipaddr.Prefix.mem expected) ipaddrs in
     of_qualifier ~mechanism q exists in
   let+ () = tries (List.init 10 fn) in
@@ -864,30 +873,14 @@ and go ~limit q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
 
 let a_mechanism ctx ~limit:_ q domain_name (cidr_v4, cidr_v6) =
   let mechanism = A (Some domain_name, cidr_v4, cidr_v6) in
-  let* response = (domain_name, Dns.Rr_map.A) in
-  match response with
-  | Ok (_, v4s) ->
-      let v4s = Ipaddr.V4.Set.elements v4s in
-      let v4s = List.map (ipv4_with_cidr cidr_v4) v4s in
-      let expected = Map.get Map.K.ip ctx in
-      let v4s = List.map (fun v -> Ipaddr.V4 v) v4s in
-      let exists = List.exists (Ipaddr.Prefix.mem expected) v4s in
-      of_qualifier ~mechanism q exists ;
-      return ()
-  | Error _ -> begin
-      let* response = (domain_name, Dns.Rr_map.Aaaa) in
-      match response with
-      | Ok (_, v6s) ->
-          let v6s = Ipaddr.V6.Set.elements v6s in
-          let v6s = List.map (ipv6_with_cidr cidr_v6) v6s in
-          let expected = Map.get Map.K.ip ctx in
-          let v6s = List.map (fun v -> Ipaddr.V6 v) v6s in
-          let exists = List.exists (Ipaddr.Prefix.mem expected) v6s in
-          of_qualifier ~mechanism q exists ;
-          return ()
-      | Error (`Msg _) -> terminate Result.temperror
-      | Error (`No_domain _ | `No_data _) -> return ()
-    end
+  let expected = Map.get Map.K.ip ctx in
+  let+ result = ipaddrs_of_domain domain_name expected (cidr_v4, cidr_v6) in
+  match result with
+  | Ok valid_ips ->
+      let exists = List.exists (Ipaddr.Prefix.mem expected) valid_ips in
+      of_qualifier ~mechanism q exists
+  | Error (`Msg _) -> terminate Result.temperror
+  | Error (`No_domain _ | `No_data _) -> ()
 
 let exists_mechanism _ctx ~limit:_ q domain_name =
   let mechanism = Exists domain_name in
