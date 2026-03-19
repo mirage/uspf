@@ -1398,13 +1398,7 @@ let colombe_domain_to_emile_domain = function
   | Colombe.Domain.Domain vs -> `Domain vs
   | Colombe.Domain.Extension (k, v) -> `Addr (Emile.Ext (k, v))
 
-let to_mailbox { Colombe.Path.local; domain; _ } =
-  let local =
-    match local with
-    | `Dot_string vs -> List.map (fun v -> `Atom v) vs
-    | `String v -> [ `String v ] in
-  let domain = colombe_domain_to_emile_domain domain in
-  { Emile.local; domain= (domain, []); name= None }
+let to_mailbox path = Colombe_emile.of_path path
 
 (* *)
 
@@ -1452,7 +1446,7 @@ module Extract = struct
 
   let to_field = function
     | result, Some ((receiver' : Emile.domain), sender', ip'), kvs ->
-        let p' = failwith_error_msg (Colombe_emile.to_path sender') in
+        let p' = Colombe_emile.to_path sender' in
         let identity, receiver, ctx = ctx_of_kvs kvs in
         let receiver =
           Option.value ~default:receiver'
