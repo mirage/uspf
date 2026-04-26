@@ -1,3 +1,8 @@
+### 0.2.1 (2026-04-21) Paris - France
+
+- Handle dual stack for MX and A keys (@BChabanne, #36)
+- Upgrade with the new version of `colombe.emile` (@dinosaure, `2dd0900`)
+
 ### 0.2.0 (2025-11-27) Paris - France
 
 - Add `Uspf.get` and `Uspf_lwt.get` to check if the SPF record exists
