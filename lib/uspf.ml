@@ -864,12 +864,11 @@ and go ~limit q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
   let mxs = List.filteri (fun idx _mx -> limit + idx < 10) mxs in
   let mxs = Array.of_list mxs in
   let fn idx () =
-    if idx >= Array.length mxs then terminate Result.permerror ;
+    if idx >= Array.length mxs then return () else
     let+ ipaddrs = ipaddrs_of_mx mxs.(idx) expected dual_cidr in
     let exists = List.exists (Ipaddr.Prefix.mem expected) ipaddrs in
     of_qualifier ~mechanism q exists in
-  let+ () = tries (List.init 10 fn) in
-  terminate Result.permerror
+  tries (List.init 10 fn)
 
 let a_mechanism ctx ~limit:_ q domain_name (cidr_v4, cidr_v6) =
   let mechanism = A (Some domain_name, cidr_v4, cidr_v6) in
@@ -1024,11 +1023,9 @@ and go ctx ~limit ~modifiers = function
       let ms = List.filteri (fun idx _m -> idx + limit < 10) ms in
       let ms = Array.of_list ms in
       let fn idx () =
-        if idx >= Array.length ms then terminate Result.permerror ;
-        Log.debug (fun m -> m "Apply the mechanism %02d" idx) ;
-        apply ctx ~limit:(limit + idx) ms.(idx) in
-      let+ () = tries (List.init 10 fn) in
-      terminate Result.permerror
+        if idx > Array.length ms then return ()
+        else apply ctx ~limit:(limit + idx) ms.(idx) in
+      tries (List.init 10 fn)
 
 let check ctx record = check ctx ~limit:0 record
 
