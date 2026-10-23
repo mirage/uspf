@@ -75,9 +75,9 @@ module K = struct
     let equal a b =
       match (a, b) with
       | `String a, `String b -> String.equal a b
-      | `Dot_string a, `Dot_string b -> begin
-          try List.for_all2 String.equal a b with _ -> false
-        end
+      | `Dot_string a, `Dot_string b ->
+          begin try List.for_all2 String.equal a b with _ -> false
+          end
       | _ -> false in
     Key.create { name= "local-part"; pp; equal }
 

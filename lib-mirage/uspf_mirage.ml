@@ -28,10 +28,10 @@ module Make (Dns_client : Dns_client_mirage.S) = struct
                 | `Softfail -> Option.fold ~none ~some c.softfail
                 | `Temperror -> Option.fold ~none ~some c.temperror
                 | `Permerror -> Option.fold ~none ~some c.permerror
-                | `Pass m -> begin
-                    fun () ->
+                | `Pass m ->
+                    begin fun () ->
                       match c.pass with Some pass -> pass m | None -> none ()
-                  end in
+                    end in
               go (fn ())
           | exn -> reraise exn
         end in
