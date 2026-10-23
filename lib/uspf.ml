@@ -86,87 +86,87 @@ let terminate result = raise (Result result)
 let choose_on ?none ?neutral ?pass ?fail ?softfail ?temperror ?permerror fn =
   Choose_on { none; neutral; pass; fail; softfail; temperror; permerror; fn }
 
-type ctx = Map.t
+type ctx = { map: Map.t; mutable lookups: int; mutable voids: int }
 
-let empty = Map.empty
+let of_map map = { map; lookups= 0; voids= 0 }
+let empty = of_map Map.empty
 
-let with_sender sender ctx =
+let with_sender sender ({ map; _ } as t) =
   match sender with
   | `HELO (domain_name : [ `raw ] Domain_name.t) ->
       let domain = Colombe.Domain.Domain (Domain_name.to_strings domain_name) in
-      let ctx = Map.add Map.K.origin `HELO ctx in
-      let ctx = Map.add Map.K.helo domain ctx in
-      let ctx = Map.add Map.K.domain_of_sender domain ctx in
-      let ctx = Map.add Map.K.sender sender ctx in
-      let ctx = Map.add Map.K.domain domain_name ctx in
-      let ctx = Map.add Map.K.local (`Dot_string [ "postmaster" ]) ctx in
+      let map = Map.add Map.K.origin `HELO map in
+      let map = Map.add Map.K.helo domain map in
+      let map = Map.add Map.K.domain_of_sender domain map in
+      let map = Map.add Map.K.sender sender map in
+      let map = Map.add Map.K.domain domain_name map in
+      let map = Map.add Map.K.local (`Dot_string [ "postmaster" ]) map in
       (* XXX(dinosaure): see RFC 7208, 4.3, If the sender has no local-part,
        * substitute the string "postmaster" for the local-part. *)
-      ctx
+      { t with map }
   | `MAILFROM { Colombe.Path.local; domain; _ } ->
-      let ctx = Map.add Map.K.origin `MAILFROM ctx in
-      let ctx = Map.add Map.K.local local ctx in
-      let ctx = Map.add Map.K.domain_of_sender domain ctx in
-      let ctx = Map.add Map.K.sender sender ctx in
-      let ctx =
-        match (domain, Map.find Map.K.domain ctx) with
+      let map = Map.add Map.K.origin `MAILFROM map in
+      let map = Map.add Map.K.local local map in
+      let map = Map.add Map.K.domain_of_sender domain map in
+      let map = Map.add Map.K.sender sender map in
+      let map =
+        match (domain, Map.find Map.K.domain map) with
         | Colombe.Domain.Domain vs, None ->
             (* XXX(dinosaure): assume that an [HELO] should be already done with
              * the same domain-name. *)
-            Map.add Map.K.domain (Domain_name.of_strings_exn vs) ctx
+            Map.add Map.K.domain (Domain_name.of_strings_exn vs) map
         | Colombe.Domain.Domain vs, Some vs' ->
             let vs = Domain_name.of_strings_exn vs in
             if not (Domain_name.equal vs vs')
-            then Map.add Map.K.domain vs ctx
-            else ctx
-        | _ -> ctx in
-      ctx
+            then Map.add Map.K.domain vs map
+            else map
+        | _ -> map in
+      { t with map }
 
-let with_ip ip ctx =
+let with_ip ip ({ map; _ } as t) =
   match ip with
   | Ipaddr.V4 _ ->
-      let ctx = Map.add Map.K.v `In_addr ctx in
-      let ctx = Map.add Map.K.ip ip ctx in
-      ctx
+      let map = Map.add Map.K.v `In_addr map in
+      let map = Map.add Map.K.ip ip map in
+      { t with map }
   | Ipaddr.V6 _ ->
-      let ctx = Map.add Map.K.v `Ip6 ctx in
-      let ctx = Map.add Map.K.ip ip ctx in
-      ctx
+      let map = Map.add Map.K.v `Ip6 map in
+      let map = Map.add Map.K.ip ip map in
+      { t with map }
 
-let merge ctx0 ctx1 =
+let merge { map= map0; _ } { map= map1; _ } =
   (* ip, domain, sender, local, domain_of_sender, v, helo, origin *)
-  let same_or_unknown k ctx0 ctx1 =
-    match (Map.find k ctx0, Map.find k ctx1) with
+  let same_or_unknown k map0 map1 =
+    match (Map.find k map0, Map.find k map1) with
     | None, None | Some _, None | None, Some _ -> true
     | Some a, Some b ->
         let info = Map.Key.info k in
         info.Map.Info.equal a b in
   if
-    same_or_unknown Map.K.ip ctx0 ctx1
-    && same_or_unknown Map.K.domain ctx0 ctx1
-    && same_or_unknown Map.K.local ctx0 ctx1
-    && same_or_unknown Map.K.domain_of_sender ctx0 ctx1
-    && same_or_unknown Map.K.v ctx0 ctx1
-    && same_or_unknown Map.K.helo ctx0 ctx1
-    && same_or_unknown Map.K.origin ctx0 ctx1
+    same_or_unknown Map.K.ip map0 map1
+    && same_or_unknown Map.K.domain map0 map1
+    && same_or_unknown Map.K.local map0 map1
+    && same_or_unknown Map.K.domain_of_sender map0 map1
+    && same_or_unknown Map.K.v map0 map1
+    && same_or_unknown Map.K.helo map0 map1
+    && same_or_unknown Map.K.origin map0 map1
   then
-    let fn (Map.B (k, v)) ctx = Map.add k v ctx in
-    let ctx = Map.fold fn Map.empty ctx0 in
-    let ctx = Map.fold fn ctx ctx1 in
-    Some ctx
+    let fn (Map.B (k, v)) map = Map.add k v map in
+    let map = Map.fold fn Map.empty map0 in
+    let map = Map.fold fn map map1 in
+    Some (of_map map)
   else None
 
 let colombe_domain_to_domain_name = function
   | Colombe.Domain.Domain lst -> Domain_name.of_strings lst
   | v -> error_msgf "Invalid domain-name: %a" Colombe.Domain.pp v
 
-let domain ctx =
-  match
-    ( Map.find Map.K.helo ctx
-    , Map.find Map.K.domain_of_sender ctx
-    , Map.find Map.K.domain ctx
-    , Map.find Map.K.sender ctx )
-  with
+let domain { map; _ } =
+  let helo = Map.find Map.K.helo map
+  and domain_of_sender = Map.find Map.K.domain_of_sender map
+  and domain = Map.find Map.K.domain map
+  and sender = Map.find Map.K.sender map in
+  match helo, domain_of_sender, domain, sender with
   | _, _, Some v, _ | _, _, _, Some (`HELO v) -> Some v
   | Some v, None, None, None
   | _, Some v, None, None
@@ -174,7 +174,7 @@ let domain ctx =
       Stdlib.Result.to_option (colombe_domain_to_domain_name v)
   | None, None, None, None -> None
 
-let origin ctx = Map.find Map.K.origin ctx
+let origin ctx = Map.find Map.K.origin ctx.map
 
 module Macro = struct
   open Angstrom
@@ -352,9 +352,9 @@ module Macro = struct
     with Not_found ->
       Fmt.error_msg "Missing informations while expanding macro"
 
-  let expand_string hmp str =
+  let expand_string ctx str =
     match Angstrom.parse_string ~consume:All domain_spec str with
-    | Ok v -> expand_macro hmp v
+    | Ok v -> expand_macro ctx.map v
     | Error _ -> error_msgf "Invalid macro specification: %S" str
 end
 
@@ -795,7 +795,7 @@ module Record = struct
 
   let of_string ~ctx str =
     Term.parse_record str >>| fun terms ->
-    List.fold_left (fold ctx) { mechanisms= []; modifiers= [] } terms
+    List.fold_left (fold ctx.map) { mechanisms= []; modifiers= [] } terms
 end
 
 let rec select_spf1 = function
@@ -840,48 +840,63 @@ let ipaddrs_of_domain domain expected (cidr_v4, cidr_v6) =
       let v6s = List.map (fun v -> Ipaddr.V6 v) v6s in
       return (Ok v6s)
 
-let ipaddrs_of_mx { Dns.Mx.mail_exchange; _ } expected (cidr_v4, cidr_v6) =
+(* RFC 7208, section 4.6.4: the [include], [a], [mx], [ptr] and [exists]
+   mechanisms and the [redirect=] modifier cause DNS lookups. The total number
+   of them must be limited to 10 during the evaluation, and the number of
+   "void lookups" (no answer or NXDOMAIN) should be limited to 2. Exceeding one
+   of these limits produces a [permerror]. *)
+let max_lookups = 10
+let max_void_lookups = 2
+
+let lookup ctx =
+  ctx.lookups <- ctx.lookups + 1 ;
+  if ctx.lookups > max_lookups then terminate Result.permerror
+
+let void_lookup ctx =
+  ctx.voids <- ctx.voids + 1 ;
+  if ctx.voids > max_void_lookups then terminate Result.permerror
+
+let ipaddrs_of_mx ctx { Dns.Mx.mail_exchange; _ } expected (cidr_v4, cidr_v6) =
   let+ result = ipaddrs_of_domain mail_exchange expected (cidr_v4, cidr_v6) in
   match result with
   | Ok ips -> ips
   | Error (`Msg _) -> terminate Result.temperror
-  | Error (`No_domain _ | `No_data _) -> []
+  | Error (`No_domain _ | `No_data _) -> void_lookup ctx ; []
 
-let rec mx_mechanism ctx ~limit q domain_name dual_cidr =
+let rec mx_mechanism ctx q domain_name dual_cidr =
   let* response = (domain_name, Dns.Rr_map.Mx) in
   match response with
   | Error (`Msg _) -> terminate Result.temperror
-  | Error (`No_data _ | `No_domain _) (* RCODE:3 *) -> return ()
+  | Error (`No_data _ | `No_domain _) (* RCODE:3 *) ->
+      void_lookup ctx ; return ()
   | Ok (_, mxs) ->
-  match Map.get Map.K.ip ctx with
+  match Map.get Map.K.ip ctx.map with
   | value ->
-      go ~limit q value (Dns.Rr_map.Mx_set.elements mxs) domain_name dual_cidr
+      go ctx q value (Dns.Rr_map.Mx_set.elements mxs) domain_name dual_cidr
   | exception _ -> return ()
 
-and go ~limit q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
-  if limit >= 10 then raise (Result Result.permerror) ;
+and go ctx q expected mxs domain_name ((cidr_v4, cidr_v6) as dual_cidr) =
   let mechanism = Mx (Some domain_name, cidr_v4, cidr_v6) in
-  let mxs = List.filteri (fun idx _mx -> limit + idx < 10) mxs in
   let mxs = Array.of_list mxs in
   let fn idx () =
-    if idx >= Array.length mxs then return () else
-    let+ ipaddrs = ipaddrs_of_mx mxs.(idx) expected dual_cidr in
+    if idx >= max_lookups then terminate Result.permerror ;
+    let+ ipaddrs = ipaddrs_of_mx ctx mxs.(idx) expected dual_cidr in
     let exists = List.exists (Ipaddr.Prefix.mem expected) ipaddrs in
     of_qualifier ~mechanism q exists in
-  tries (List.init 10 fn)
+  tries (List.init (Array.length mxs) fn)
 
-let a_mechanism ctx ~limit:_ q domain_name (cidr_v4, cidr_v6) =
+let a_mechanism ctx q domain_name (cidr_v4, cidr_v6) =
   let mechanism = A (Some domain_name, cidr_v4, cidr_v6) in
-  let expected = Map.get Map.K.ip ctx in
+  let expected = Map.get Map.K.ip ctx.map in
   let+ result = ipaddrs_of_domain domain_name expected (cidr_v4, cidr_v6) in
   match result with
   | Ok valid_ips ->
       let exists = List.exists (Ipaddr.Prefix.mem expected) valid_ips in
       of_qualifier ~mechanism q exists
   | Error (`Msg _) -> terminate Result.temperror
-  | Error (`No_domain _ | `No_data _) -> ()
+  | Error (`No_domain _ | `No_data _) -> void_lookup ctx
 
-let exists_mechanism _ctx ~limit:_ q domain_name =
+let exists_mechanism ctx q domain_name =
   let mechanism = Exists domain_name in
   let* response = (domain_name, Dns.Rr_map.A) in
   match response with
@@ -895,8 +910,12 @@ let exists_mechanism _ctx ~limit:_ q domain_name =
           of_qualifier ~mechanism q true ;
           return ()
       | Error (`Msg _) -> terminate Result.temperror
-      | Error (`No_domain _ | `No_data _) -> return ()
+      | Error (`No_domain _ | `No_data _) -> void_lookup ctx ; return ()
     end
+
+let is_lookup = function
+  | A _ | Mx _ | Include _ | Exists _ | Ptr _ -> true
+  | All | V4 _ | V6 _ -> false
 
 let has_redirect modifiers =
   let fold acc modifier =
@@ -910,17 +929,23 @@ let has_redirect modifiers =
   let redirect, modifiers = List.fold_left fold (None, []) modifiers in
   (redirect, List.rev modifiers)
 
-let rec do_redirect ctx ~limit ~modifiers =
+let rec do_redirect ctx ~modifiers =
   match has_redirect modifiers with
   | exception _ -> terminate Result.permerror
   | None, _ -> terminate Result.neutral
-  | Some redirect, modifiers -> (
-      let domain_name = Domain_name.of_string redirect in
-      let domain_name = Stdlib.Result.get_ok domain_name in
+  | Some redirect, _modifiers -> begin
+      lookup ctx ;
+      (* NOTE(dinosaure): RFC 7208, section 6.1: if the target name is malformed
+         or if it does not have an SPF record, the result is a permerror.
+         Otherwise, the result is the result of the evaluation of the target's
+         record. *)
+      let domain_name =
+        match Domain_name.of_string redirect with
+        | Ok domain_name -> domain_name
+        | Error _ -> terminate Result.permerror in
       let* response = (domain_name, Dns.Rr_map.Txt) in
       match response with
-      | Error (`No_domain _ | `No_data _) ->
-          go ctx ~limit:(succ limit) ~modifiers []
+      | Error (`No_domain _ | `No_data _) -> terminate Result.permerror
       | Error (`Msg _err) -> terminate Result.temperror
       | Ok (_, txts) ->
           let txts = Dns.Rr_map.Txt_set.elements txts in
@@ -932,18 +957,17 @@ let rec do_redirect ctx ~limit ~modifiers =
             match Term.parse_record terms with
             | Ok terms -> terms
             | Error _ -> terminate Result.permerror in
+          let ctx = { ctx with map= Map.add Map.K.domain domain_name ctx.map } in
           let empty = { Record.mechanisms= []; modifiers= [] } in
-          let record = List.fold_left (Record.fold ctx) empty terms in
+          let record = List.fold_left (Record.fold ctx.map) empty terms in
           let record = { record with mechanisms= List.rev record.mechanisms } in
           let record = { record with modifiers= List.rev record.modifiers } in
-          let ctx' = Map.add Map.K.domain domain_name ctx in
-          let fn () =
-            go ctx' ~limit ~modifiers:record.modifiers record.mechanisms in
-          let neutral () = go ctx ~limit:(succ limit) ~modifiers [] in
-          choose_on fn ~neutral)
+          go ctx ~modifiers:record.modifiers record.mechanisms end
 
-and include_mechanism ctx ~limit q domain_name =
-  let ctx = Map.add Map.K.domain domain_name ctx in
+and include_mechanism ctx q domain_name =
+  (* NOTE(dinosaure): [ctx'] is a copy of [ctx]: the lookups done by the
+     included record must be reported to [ctx] if the evaluation continues. *)
+  let ctx' = { ctx with map= Map.add Map.K.domain domain_name ctx.map } in
   let* response = (domain_name, Dns.Rr_map.Txt) in
   match response with
   | Error (`Msg _) -> terminate Result.temperror
@@ -959,17 +983,24 @@ and include_mechanism ctx ~limit q domain_name =
         | Ok terms -> terms
         | Error _ -> terminate Result.permerror in
       let empty = { Record.mechanisms= []; modifiers= [] } in
-      let record = List.fold_left (Record.fold ctx) empty terms in
+      let record = List.fold_left (Record.fold ctx'.map) empty terms in
       let record = { record with mechanisms= List.rev record.mechanisms } in
       let record = { record with modifiers= List.rev record.modifiers } in
+      (* See RFC 7208, section 5.2. *)
       let permerror () = terminate Result.permerror in
+      let no_match () =
+        ctx.lookups <- ctx'.lookups ;
+        ctx.voids <- ctx'.voids ;
+        return () in
       let pass mechanism =
         of_qualifier ~mechanism q true ;
         return () in
-      let fn () = check ctx ~limit:(succ limit) record in
-      choose_on fn ~permerror ~none:permerror ~pass
+      let fn () = check ctx' record in
+      choose_on fn ~permerror ~none:permerror ~pass ~fail:no_match
+        ~softfail:no_match ~neutral:no_match
 
-and apply ctx ~limit (q, mechanism) =
+and apply ctx (q, mechanism) =
+  if is_lookup mechanism then lookup ctx ;
   match mechanism with
   | All ->
       of_qualifier ~mechanism q true ;
@@ -977,60 +1008,56 @@ and apply ctx ~limit (q, mechanism) =
   | A (Some domain_name, cidr_ipv4, cidr_ipv6) ->
       Log.debug (fun m ->
           m "Apply A mechanism with %a." Domain_name.pp domain_name) ;
-      a_mechanism ctx ~limit q domain_name (cidr_ipv4, cidr_ipv6)
+      a_mechanism ctx q domain_name (cidr_ipv4, cidr_ipv6)
   | A (None, cidr_ipv4, cidr_ipv6) ->
-      let domain_name = Map.get Map.K.domain ctx in
+      let domain_name = Map.get Map.K.domain ctx.map in
       Log.debug (fun m ->
           m "Apply A mechanism with no domain, using %a." Domain_name.pp
             domain_name) ;
-      a_mechanism ctx ~limit q domain_name (cidr_ipv4, cidr_ipv6)
+      a_mechanism ctx q domain_name (cidr_ipv4, cidr_ipv6)
   | Mx (Some domain_name, cidr_ipv4, cidr_ipv6) ->
       Log.debug (fun m ->
           m "Apply MX mechanism with %a." Domain_name.pp domain_name) ;
-      mx_mechanism ctx ~limit q domain_name (cidr_ipv4, cidr_ipv6)
+      mx_mechanism ctx q domain_name (cidr_ipv4, cidr_ipv6)
   | Mx (None, cidr_ipv4, cidr_ipv6) ->
-      let domain_name = Map.get Map.K.domain ctx in
+      let domain_name = Map.get Map.K.domain ctx.map in
       Log.debug (fun m ->
           m "Apply MX mechanism with no domain, using %a." Domain_name.pp
             domain_name) ;
-      mx_mechanism ctx ~limit q domain_name (cidr_ipv4, cidr_ipv6)
+      mx_mechanism ctx q domain_name (cidr_ipv4, cidr_ipv6)
   | Include domain_name ->
       Log.debug (fun m ->
           m "Apply INCLUDE mechanism with %a." Domain_name.pp domain_name) ;
-      include_mechanism ctx ~limit q domain_name
+      include_mechanism ctx q domain_name
   | V4 v4 ->
       Log.debug (fun m ->
           m "Apply IPv4 mechanism with %a." Ipaddr.V4.Prefix.pp v4) ;
-      let exists = Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V4 v4) in
+      let exists = Ipaddr.Prefix.mem (Map.get Map.K.ip ctx.map) (Ipaddr.V4 v4) in
       of_qualifier ~mechanism q exists ;
       return ()
   | V6 v6 ->
       Log.debug (fun m ->
           m "Apply IPv6 mechanism with %a." Ipaddr.V6.Prefix.pp v6) ;
-      let exists = Ipaddr.Prefix.mem (Map.get Map.K.ip ctx) (Ipaddr.V6 v6) in
+      let exists = Ipaddr.Prefix.mem (Map.get Map.K.ip ctx.map) (Ipaddr.V6 v6) in
       of_qualifier ~mechanism q exists ;
       return ()
-  | Exists domain_name -> exists_mechanism ctx ~limit q domain_name
+  | Exists domain_name -> exists_mechanism ctx q domain_name
   | Ptr _ -> return ()
 (* See RFC 7802, Appendix B. *)
 
-and check ctx ~limit record =
-  go ctx ~limit ~modifiers:record.modifiers record.mechanisms
+and check ctx record = go ctx ~modifiers:record.modifiers record.mechanisms
 
-and go ctx ~limit ~modifiers = function
-  | [] -> do_redirect ctx ~limit ~modifiers
-  | ms ->
-      let ms = List.filteri (fun idx _m -> idx + limit < 10) ms in
-      let ms = Array.of_list ms in
-      let fn idx () =
-        if idx > Array.length ms then return ()
-        else apply ctx ~limit:(limit + idx) ms.(idx) in
-      tries (List.init 10 fn)
+and go ctx ~modifiers mechanisms =
+  let ms = Array.of_list mechanisms in
+  let fn idx () =
+    if idx = Array.length ms then do_redirect ctx ~modifiers
+    else apply ctx ms.(idx) in
+  tries (List.init (Array.length ms + 1) fn)
 
-let check ctx record = check ctx ~limit:0 record
+let check ctx record = check { ctx with lookups= 0; voids= 0 } record
 
 let get_and_check ctx =
-  match Map.find Map.K.domain ctx with
+  match Map.find Map.K.domain ctx.map with
   | None -> failwith "Missing domain-name into the given context"
   | Some domain_name -> (
       let* response = (domain_name, Dns.Rr_map.Txt) in
@@ -1048,13 +1075,13 @@ let get_and_check ctx =
             | Ok terms -> terms
             | Error _ -> raise (Result Result.permerror) in
           let empty = { Record.mechanisms= []; modifiers= [] } in
-          let record = List.fold_left (Record.fold ctx) empty terms in
+          let record = List.fold_left (Record.fold ctx.map) empty terms in
           let record = { record with mechanisms= List.rev record.mechanisms } in
           let record = { record with modifiers= List.rev record.modifiers } in
           check ctx record)
 
 let get ctx =
-  match Map.find Map.K.domain ctx with
+  match Map.find Map.K.domain ctx.map with
   | None -> failwith "Missing domain-name into the given context"
   | Some domain_name -> (
       let* response = (domain_name, Dns.Rr_map.Txt) in
@@ -1115,7 +1142,7 @@ module Encoder = struct
   let ipaddr ppf v = eval ppf [ !!string ] (Ipaddr.to_string v)
 
   let comment ~ctx ?receiver ppf (v : Result.t) =
-    match (receiver, Map.get Map.K.sender ctx, v) with
+    match (receiver, Map.get Map.K.sender ctx.map, v) with
     | None, _, _ -> ppf
     | Some receiver, `MAILFROM p, `Pass _ ->
         eval ppf
@@ -1126,9 +1153,9 @@ module Encoder = struct
           ; spaces 1; string $ "permitted"; spaces 1; string $ "sender"
           ; char $ ')'
           ]
-          receiver p (Map.get Map.K.ip ctx)
+          receiver p (Map.get Map.K.ip ctx.map)
     | Some receiver, `MAILFROM p, _ -> begin
-        match Map.get Map.K.ip ctx with
+        match Map.get Map.K.ip ctx.map with
         | value ->
             eval ppf
               [
@@ -1147,10 +1174,10 @@ module Encoder = struct
   let field ~ctx ?receiver ppf v =
     eval ppf
       ([ tbox 1; !!result; fws; !!(comment ~ctx ?receiver) ]
-      ^^ kv ~name:"client-ip" Map.K.ip ~pp:Ipaddr.pp ctx
-      ^^ kv ~name:"envelope-from" Map.K.sender ctx
-      ^^ kv ~name:"helo" Map.K.helo ctx
-      ^^ kv ~name:"identity" Map.K.sender ~pp:pp_identity ctx
+      ^^ kv ~name:"client-ip" Map.K.ip ~pp:Ipaddr.pp ctx.map
+      ^^ kv ~name:"envelope-from" Map.K.sender ctx.map
+      ^^ kv ~name:"helo" Map.K.helo ctx.map
+      ^^ kv ~name:"identity" Map.K.sender ~pp:pp_identity ctx.map
       ^^ (match receiver with
          | None -> [ cut ]
          | Some receiver ->
@@ -1482,7 +1509,7 @@ module Extract = struct
                     Map.add Map.K.sender (`HELO v) ctx
                 | _ -> ctx in
               (ctx, Some (to_mailbox p')) in
-        { result; receiver= Some receiver; sender; ip= Some ip; ctx }
+        { result; receiver= Some receiver; sender; ip= Some ip; ctx= of_map ctx }
     | result, None, kvs ->
         let _identity, receiver, ctx = ctx_of_kvs kvs in
         let receiver = Option.map colombe_domain_to_emile_domain receiver in
@@ -1491,7 +1518,7 @@ module Extract = struct
           | Some (`MAILFROM p) -> Some (to_mailbox p)
           | _ -> None in
         let ip = Map.find Map.K.ip ctx in
-        { result; receiver; sender; ip; ctx }
+        { result; receiver; sender; ip; ctx= of_map ctx }
 
   type state = Extraction of Mrmime.Hd.decoder * field list
   type extract = { input: bytes; input_pos: int; input_len: int; state: state }
