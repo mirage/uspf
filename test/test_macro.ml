@@ -467,5 +467,9 @@ let () =
   Alcotest.run "decoding"
     [
       ("macro", [ test01; test02 ]); ("record", [ test03; test04 ])
-    ; ("spf", [ test05; test06; test07 ])
+    ; ( "spf"
+      , [
+          test05; test06; test07; test08; test09; test10; test11; test12; test13
+        ; test14
+        ] )
     ]
