@@ -267,9 +267,50 @@ let test06 =
   | Some result -> Alcotest.failf "Invalid SPF result: %a" Uspf.Result.pp result
   | None -> Alcotest.failf "Impossible to compute a result"
 
+let test07 =
+  Alcotest.test_case "mx without match" `Quick @@ fun () ->
+  let getrrecord : type a r.
+      a Domain_name.t -> r Dns.Rr_map.key -> r Uspf.response =
+   fun domain_name record ->
+    let mx preference name =
+      {
+        Dns.Mx.preference
+      ; mail_exchange= Domain_name.(host_exn (of_string_exn name))
+      } in
+    let mxs =
+      Dns.Rr_map.Mx_set.of_list [ mx 0 "mx1.bar.com"; mx 0 "mx2.bar.com" ]
+    in
+    let v4 str = Ipaddr.V4.(Set.singleton (of_string_exn str)) in
+    match (record, Domain_name.to_string domain_name) with
+    | Dns.Rr_map.Txt, "bar.com" ->
+        Ok
+          ( 0l
+          , Dns.Rr_map.Txt_set.singleton
+              "v=spf1 a mx include:relay.foo.com ~all" )
+    | Dns.Rr_map.Txt, "relay.foo.com" ->
+        Ok (0l, Dns.Rr_map.Txt_set.singleton "v=spf1 ip4:10.0.0.0/24 ~all")
+    | Dns.Rr_map.A, "bar.com" -> Ok (0l, v4 "192.168.1.1")
+    | Dns.Rr_map.A, "mx1.bar.com" -> Ok (0l, v4 "192.168.1.2")
+    | Dns.Rr_map.A, "mx2.bar.com" -> Ok (0l, v4 "192.168.1.3")
+    | Dns.Rr_map.Mx, "bar.com" -> Ok (0l, mxs)
+    | _ ->
+        R.error_msgf "Error on %a:%a." Dns.Rr_map.ppk (Dns.Rr_map.K record)
+          Domain_name.pp domain_name in
+  let getrrecord = { fn= getrrecord } in
+  let ctx =
+    Uspf.empty
+    |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
+    |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
+    |> Uspf.with_ip (Ipaddr.of_string_exn "10.0.0.1") in
+  let result = eval ~getrrecord (Uspf.get_and_check ctx) in
+  match result with
+  | Some (`Pass _) -> Alcotest.(check pass) "spf" () ()
+  | Some result -> Alcotest.failf "Invalid SPF result: %a" Uspf.Result.pp result
+  | None -> Alcotest.failf "Impossible to compute a result"
+
 let () =
   Alcotest.run "decoding"
     [
       ("macro", [ test01; test02 ]); ("record", [ test03; test04 ])
-    ; ("spf", [ test05; test06 ])
+    ; ("spf", [ test05; test06; test07 ])
     ]
