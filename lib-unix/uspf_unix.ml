@@ -20,9 +20,10 @@ let eval : type a. dns:Dns_client_unix.t -> a Uspf.t -> Uspf.Result.t option =
         | `Softfail -> Option.fold ~none ~some c.softfail
         | `Temperror -> Option.fold ~none ~some c.temperror
         | `Permerror -> Option.fold ~none ~some c.permerror
-        | `Pass m -> begin
-            fun () -> match c.pass with Some pass -> pass m | None -> none ()
-          end in
+        | `Pass m ->
+            begin fun () ->
+              match c.pass with Some pass -> pass m | None -> none ()
+            end in
       go (fn ()) in
   match go t with exception Uspf.Result result -> Some result | _ -> None
 

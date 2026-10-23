@@ -172,9 +172,10 @@ let eval : type a. getrrecord:getrrecord -> a Uspf.t -> Uspf.Result.t option =
         | `Softfail -> Option.fold ~none ~some c.softfail
         | `Temperror -> Option.fold ~none ~some c.temperror
         | `Permerror -> Option.fold ~none ~some c.permerror
-        | `Pass m -> begin
-            fun () -> match c.pass with Some pass -> pass m | None -> none ()
-          end in
+        | `Pass m ->
+            begin fun () ->
+              match c.pass with Some pass -> pass m | None -> none ()
+            end in
       go (fn ()) in
   match go t with exception Uspf.Result result -> Some result | _ -> None
 
@@ -278,8 +279,7 @@ let test07 =
       ; mail_exchange= Domain_name.(host_exn (of_string_exn name))
       } in
     let mxs =
-      Dns.Rr_map.Mx_set.of_list [ mx 0 "mx1.bar.com"; mx 0 "mx2.bar.com" ]
-    in
+      Dns.Rr_map.Mx_set.of_list [ mx 0 "mx1.bar.com"; mx 0 "mx2.bar.com" ] in
     let v4 str = Ipaddr.V4.(Set.singleton (of_string_exn str)) in
     match (record, Domain_name.to_string domain_name) with
     | Dns.Rr_map.Txt, "bar.com" ->
@@ -307,6 +307,161 @@ let test07 =
   | Some (`Pass _) -> Alcotest.(check pass) "spf" () ()
   | Some result -> Alcotest.failf "Invalid SPF result: %a" Uspf.Result.pp result
   | None -> Alcotest.failf "Impossible to compute a result"
+
+let test08 =
+  Alcotest.test_case "no match" `Quick @@ fun () ->
+  let getrrecord : type a r.
+      a Domain_name.t -> r Dns.Rr_map.key -> r Uspf.response =
+   fun domain_name record ->
+    match (record, Domain_name.to_string domain_name) with
+    | Dns.Rr_map.Txt, "bar.com" ->
+        Ok (0l, Dns.Rr_map.Txt_set.singleton "v=spf1 ip4:192.168.1.0/24")
+    | _ ->
+        R.error_msgf "Error on %a:%a." Dns.Rr_map.ppk (Dns.Rr_map.K record)
+          Domain_name.pp domain_name in
+  let getrrecord = { fn= getrrecord } in
+  let ctx =
+    Uspf.empty
+    |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
+    |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
+    |> Uspf.with_ip (Ipaddr.of_string_exn "10.0.0.1") in
+  let result = eval ~getrrecord (Uspf.get_and_check ctx) in
+  match result with
+  | Some `Neutral -> Alcotest.(check pass) "spf" () ()
+  | Some result -> Alcotest.failf "Invalid SPF result: %a" Uspf.Result.pp result
+  | None -> Alcotest.failf "Impossible to compute a result"
+
+let check_spf ?(as' = []) ?(mxs = []) ~ip txts =
+  let getrrecord : type a r.
+      a Domain_name.t -> r Dns.Rr_map.key -> r Uspf.response =
+   fun domain_name record ->
+    let name = Domain_name.to_string domain_name in
+    let soa = Dns.Soa.create (Domain_name.raw domain_name) in
+    let no_domain () = Error (`No_domain (Domain_name.raw domain_name, soa)) in
+    match record with
+    | Dns.Rr_map.Txt -> (
+        match List.assoc_opt name txts with
+        | Some txt -> Ok (0l, Dns.Rr_map.Txt_set.singleton txt)
+        | None -> no_domain ())
+    | Dns.Rr_map.A -> (
+        match List.assoc_opt name as' with
+        | Some v4 -> Ok (0l, Ipaddr.V4.(Set.singleton (of_string_exn v4)))
+        | None -> no_domain ())
+    | Dns.Rr_map.Mx -> (
+        match List.assoc_opt name mxs with
+        | Some hosts ->
+            let mx name =
+              {
+                Dns.Mx.preference= 0
+              ; mail_exchange= Domain_name.(host_exn (of_string_exn name))
+              } in
+            Ok (0l, Dns.Rr_map.Mx_set.of_list (List.map mx hosts))
+        | None -> no_domain ())
+    | _ -> no_domain () in
+  let getrrecord = { fn= getrrecord } in
+  let ctx =
+    Uspf.empty
+    |> Uspf.with_sender (`HELO (Domain_name.of_string_exn "bar.com"))
+    |> Uspf.with_sender (`MAILFROM (Colombe.Path.of_string_exn "<x@bar.com>"))
+    |> Uspf.with_ip (Ipaddr.of_string_exn ip) in
+  match eval ~getrrecord (Uspf.get_and_check ctx) with
+  | Some (`Pass _) -> Some "pass"
+  | Some result -> Some (Fmt.str "%a" Uspf.Result.pp result)
+  | None -> None
+
+let spf = Alcotest.(option string)
+let pass = Some "pass"
+let permerror = Some "permerror"
+
+let test09 =
+  Alcotest.test_case "include without match" `Quick @@ fun () ->
+  let txts =
+    [
+      ("bar.com", "v=spf1 include:a.com include:b.com -all")
+    ; ("a.com", "v=spf1 ip4:192.168.0.0/24 ~all")
+    ; ("b.com", "v=spf1 ip4:10.0.0.0/24 ~all")
+    ] in
+  Alcotest.check spf "spf" pass (check_spf ~ip:"10.0.0.1" txts)
+
+let test10 =
+  Alcotest.test_case "more than 10 ip4" `Quick @@ fun () ->
+  let ip4s = List.init 12 (Fmt.str "ip4:192.168.%d.0/24") in
+  let txts = [ ("bar.com", "v=spf1 " ^ String.concat " " ip4s ^ " -all") ] in
+  Alcotest.check spf "spf" pass (check_spf ~ip:"192.168.11.1" txts)
+
+let test11 =
+  Alcotest.test_case "more than 10 lookups" `Quick @@ fun () ->
+  let a = List.init 8 (Fmt.str "a:a%d.com") in
+  let as' = List.init 10 (fun idx -> (Fmt.str "a%d.com" idx, "192.168.0.1")) in
+  let as' = ("a10.com", "10.0.0.1") :: as' in
+  let txts =
+    [
+      ("bar.com", "v=spf1 include:foo.com a:a9.com a:a10.com -all")
+    ; ("foo.com", "v=spf1 " ^ String.concat " " a ^ " ~all")
+    ] in
+  (* include:foo.com (1) + foo.com (8) + a:a9.com (10) + a:a10.com (11) *)
+  Alcotest.check spf "spf" permerror (check_spf ~as' ~ip:"10.0.0.1" txts) ;
+  let txts =
+    [
+      ("bar.com", "v=spf1 include:foo.com a:a10.com -all")
+    ; ("foo.com", "v=spf1 " ^ String.concat " " a ^ " ~all")
+    ] in
+  (* include:foo.com (1) + foo.com (8) + a:a10.com (10) *)
+  Alcotest.check spf "spf" pass (check_spf ~as' ~ip:"10.0.0.1" txts)
+
+let test12 =
+  Alcotest.test_case "void lookups" `Quick @@ fun () ->
+  let as' = [ ("ok.com", "10.0.0.1") ] in
+  let txts = [ ("bar.com", "v=spf1 a:v1.com a:v2.com a:ok.com -all") ] in
+  Alcotest.check spf "spf" pass (check_spf ~as' ~ip:"10.0.0.1" txts) ;
+  let txts =
+    [ ("bar.com", "v=spf1 a:v1.com a:v2.com a:v3.com a:ok.com -all") ] in
+  Alcotest.check spf "spf" permerror (check_spf ~as' ~ip:"10.0.0.1" txts)
+
+let test13 =
+  Alcotest.test_case "more than 10 mx" `Quick @@ fun () ->
+  let hosts = List.init 11 (Fmt.str "mx%02d.bar.com") in
+  let as' = List.map (fun host -> (host, "192.168.0.1")) hosts in
+  let as' =
+    ("mx10.bar.com", "10.0.0.1") :: List.remove_assoc "mx10.bar.com" as' in
+  let mxs = [ ("bar.com", hosts) ] in
+  let txts = [ ("bar.com", "v=spf1 mx -all") ] in
+  Alcotest.check spf "spf" permerror (check_spf ~as' ~mxs ~ip:"10.0.0.1" txts)
+
+let test14 =
+  Alcotest.test_case "redirect" `Quick @@ fun () ->
+  let txts =
+    [
+      ("bar.com", "v=spf1 ip4:192.168.0.0/24 redirect=foo.com")
+    ; ("foo.com", "v=spf1 ip4:10.0.0.0/24 -all")
+    ] in
+  Alcotest.check spf "spf" pass (check_spf ~ip:"10.0.0.1" txts) ;
+  Alcotest.check spf "spf" (Some "fail") (check_spf ~ip:"172.16.0.1" txts) ;
+  (* the target exists but it does not have an SPF record *)
+  let txts =
+    [
+      ("bar.com", "v=spf1 ip4:192.168.0.0/24 redirect=foo.com")
+    ; ("foo.com", "google-site-verification=foo")
+    ] in
+  Alcotest.check spf "spf" permerror (check_spf ~ip:"10.0.0.1" txts) ;
+  (* the target does not exist *)
+  let txts = [ ("bar.com", "v=spf1 ip4:192.168.0.0/24 redirect=foo.com") ] in
+  Alcotest.check spf "spf" permerror (check_spf ~ip:"10.0.0.1" txts) ;
+  (* the target's record does not match: its result is neutral *)
+  let txts =
+    [
+      ("bar.com", "v=spf1 redirect=foo.com")
+    ; ("foo.com", "v=spf1 ip4:192.168.0.0/24")
+    ] in
+  Alcotest.check spf "spf" (Some "neutral") (check_spf ~ip:"10.0.0.1" txts) ;
+  (* macros of the target's record are expanded with the target's domain *)
+  let as' = [ ("mail.foo.com", "10.0.0.1") ] in
+  let txts =
+    [
+      ("bar.com", "v=spf1 redirect=foo.com")
+    ; ("foo.com", "v=spf1 a:mail.%{d} -all")
+    ] in
+  Alcotest.check spf "spf" pass (check_spf ~as' ~ip:"10.0.0.1" txts)
 
 let () =
   Alcotest.run "decoding"

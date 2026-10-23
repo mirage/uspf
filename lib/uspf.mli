@@ -29,8 +29,8 @@
     with these information:
 
     {[
-      let ctx =
-        Uspf.empty |> Uspf.with_sender (`MAILFROM path) |> Uspf.with_ip ipaddr
+    let ctx =
+      Uspf.empty |> Uspf.with_sender (`MAILFROM path) |> Uspf.with_ip ipaddr
     ]}
 
     From this [ctx], then the user is able to {i check} the identity of the
@@ -38,9 +38,9 @@
     analyze it and use it then with the [ctx]:
 
     {[
-      let res =
-        Uspf.get ctx sched dns (module DNS)
-        >>= Uspf.check ctx sched dns (module DNS)
+    let res =
+      Uspf.get ctx sched dns (module DNS)
+      >>= Uspf.check ctx sched dns (module DNS)
     ]}
 
     From the result, the user is able to generate an {i header field}. It
@@ -48,7 +48,7 @@
     information on the field value:
 
     {[
-      let field_name, value = Uspf.to_field ~ctx ?receiver res
+    let field_name, value = Uspf.to_field ~ctx ?receiver res
     ]}
 
     The value is well-formed for the incoming email. You just need to prepend

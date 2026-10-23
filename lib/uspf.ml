@@ -166,7 +166,7 @@ let domain { map; _ } =
   and domain_of_sender = Map.find Map.K.domain_of_sender map
   and domain = Map.find Map.K.domain map
   and sender = Map.find Map.K.sender map in
-  match helo, domain_of_sender, domain, sender with
+  match (helo, domain_of_sender, domain, sender) with
   | _, _, Some v, _ | _, _, _, Some (`HELO v) -> Some v
   | Some v, None, None, None
   | _, Some v, None, None
@@ -962,7 +962,8 @@ let rec do_redirect ctx ~modifiers =
           let record = List.fold_left (Record.fold ctx.map) empty terms in
           let record = { record with mechanisms= List.rev record.mechanisms } in
           let record = { record with modifiers= List.rev record.modifiers } in
-          go ctx ~modifiers:record.modifiers record.mechanisms end
+          go ctx ~modifiers:record.modifiers record.mechanisms
+    end
 
 and include_mechanism ctx q domain_name =
   (* NOTE(dinosaure): [ctx'] is a copy of [ctx]: the lookups done by the
@@ -1050,7 +1051,8 @@ and check ctx record = go ctx ~modifiers:record.modifiers record.mechanisms
 and go ctx ~modifiers mechanisms =
   let ms = Array.of_list mechanisms in
   let fn idx () =
-    if idx = Array.length ms then do_redirect ctx ~modifiers
+    if idx = Array.length ms
+    then do_redirect ctx ~modifiers
     else apply ctx ms.(idx) in
   tries (List.init (Array.length ms + 1) fn)
 
@@ -1154,8 +1156,8 @@ module Encoder = struct
           ; char $ ')'
           ]
           receiver p (Map.get Map.K.ip ctx.map)
-    | Some receiver, `MAILFROM p, _ -> begin
-        match Map.get Map.K.ip ctx.map with
+    | Some receiver, `MAILFROM p, _ ->
+        begin match Map.get Map.K.ip ctx.map with
         | value ->
             eval ppf
               [
@@ -1168,7 +1170,7 @@ module Encoder = struct
               ]
               receiver p value
         | exception _ -> ppf
-      end
+        end
     | Some _, `HELO _, _ -> ppf
 
   let field ~ctx ?receiver ppf v =
@@ -1179,20 +1181,20 @@ module Encoder = struct
       ^^ kv ~name:"helo" Map.K.helo ctx.map
       ^^ kv ~name:"identity" Map.K.sender ~pp:pp_identity ctx.map
       ^^ (match receiver with
-         | None -> [ cut ]
-         | Some receiver ->
-             [
-               spaces 1; string $ "receiver"; cut; char $ '='; cut
-             ; string $ Fmt.to_to_string Emile.pp_domain receiver; cut
-             ; char $ ';'
-             ])
+        | None -> [ cut ]
+        | Some receiver ->
+            [
+              spaces 1; string $ "receiver"; cut; char $ '='; cut
+            ; string $ Fmt.to_to_string Emile.pp_domain receiver; cut
+            ; char $ ';'
+            ])
       ^^ (match v with
-         | `Pass m ->
-             [
-               spaces 1; string $ "mechanism"; cut; char $ '='; cut
-             ; string $ to_safe_string Record.pp_mechanism m; cut; char $ ';'
-             ]
-         | _ -> [ cut ])
+        | `Pass m ->
+            [
+              spaces 1; string $ "mechanism"; cut; char $ '='; cut
+            ; string $ to_safe_string Record.pp_mechanism m; cut; char $ ';'
+            ]
+        | _ -> [ cut ])
       ^^ [ close; new_line ])
       v v
 end
@@ -1509,7 +1511,13 @@ module Extract = struct
                     Map.add Map.K.sender (`HELO v) ctx
                 | _ -> ctx in
               (ctx, Some (to_mailbox p')) in
-        { result; receiver= Some receiver; sender; ip= Some ip; ctx= of_map ctx }
+        {
+          result
+        ; receiver= Some receiver
+        ; sender
+        ; ip= Some ip
+        ; ctx= of_map ctx
+        }
     | result, None, kvs ->
         let _identity, receiver, ctx = ctx_of_kvs kvs in
         let receiver = Option.map colombe_domain_to_emile_domain receiver in
