@@ -1,3 +1,7 @@
+### 0.2.2 (2026-10-23) Paris - France
+
+- Fix our SPF algorithm about limits (@dinosaure, #38)
+
 ### 0.2.1 (2026-04-21) Paris - France
 
 - Handle dual stack for MX and A keys (@BChabanne, #36)
